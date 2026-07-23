@@ -11,14 +11,12 @@ from pathlib import Path
 import torch
 
 from rm_referee import constants
-from rm_referee.schema import Role, Team, unit_roles, unit_teams
+from rm_referee.schema import Role, Team, Winner, unit_roles, unit_teams
 from rm_world import (
-    MOBILE_UNIT_SLOTS,
-    ScriptedOpponent,
+    TacticalScriptedOpponent,
     TorchEnvConfig,
     TorchRMArena,
-    WorldActions,
-    terrain_demo_targets,
+    tactical_phase_label,
 )
 from rm_world.geometry import resolve_target_slots
 
@@ -60,8 +58,25 @@ FEATURE_LABELS = {
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--steps", type=int, default=100, help="Number of 0.2s policy steps.")
-    parser.add_argument("--fps", type=int, default=10, help="GIF playback frame rate.")
+    parser.add_argument(
+        "--duration-s",
+        type=float,
+        default=constants.MATCH_DURATION_S,
+        help="Simulated match duration; defaults to the complete 420s match.",
+    )
+    parser.add_argument(
+        "--steps",
+        type=int,
+        default=None,
+        help="Optional policy-step override for quick smoke exports.",
+    )
+    parser.add_argument(
+        "--capture-every",
+        type=int,
+        default=5,
+        help="Capture one frame per N policy steps (default: 1 simulated second).",
+    )
+    parser.add_argument("--fps", type=int, default=20, help="GIF playback frame rate.")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--output", default="outputs/torch_demo.gif")
@@ -172,7 +187,15 @@ def _draw_static(draw: object, arena: object, label_font: object) -> None:
         color = RED if team == Team.RED else BLUE
         base_zone = _regular_polygon((12.2 * sign, 0.0), (1.65, 1.75), 6)
         draw.line((*base_zone, base_zone[0]), fill=color, width=2)
-        outpost_zone = _regular_polygon((6.5 * sign, 0.0), (0.95, 1.05), 6)
+        outpost_center = arena.outpost_centers(
+            device="cpu",
+            dtype=torch.float32,
+        )[team]
+        outpost_zone = _regular_polygon(
+            (float(outpost_center[0]), float(outpost_center[1])),
+            (0.95, 1.05),
+            6,
+        )
         draw.line((*outpost_zone, outpost_zone[0]), fill=color, width=2)
         supply_center = (11.9 * sign, 5.6 * sign)
         supply_half = (1.25, 1.05)
@@ -215,55 +238,14 @@ def _draw_static(draw: object, arena: object, label_font: object) -> None:
     )
 
 
-def _apply_terrain_demo_routes(
-    actions: WorldActions,
-    environment: TorchRMArena,
-) -> None:
-    """Spread mobile units across terrain-aware demonstration lanes."""
-
-    target_xy = terrain_demo_targets(
-        float(environment.game.elapsed_s[0]),
-        device=environment.game.device,
-        dtype=environment.game.dtype,
-    )
-    mobile_slots = torch.tensor(
-        MOBILE_UNIT_SLOTS,
-        device=environment.game.device,
-    )
-    position = environment.world.position_xy[:, mobile_slots]
-    delta = target_xy[None, ...] - position
-    distance = torch.linalg.vector_norm(delta, dim=-1, keepdim=True)
-    desired_world = delta / torch.clamp(distance, min=1.0e-6) * 1.8
-    yaw = environment.world.yaw[:, mobile_slots]
-    cosine = torch.cos(yaw)
-    sine = torch.sin(yaw)
-    actions.body_velocity_xy[:, mobile_slots] = torch.stack(
-        (
-            cosine * desired_world[..., 0] + sine * desired_world[..., 1],
-            -sine * desired_world[..., 0] + cosine * desired_world[..., 1],
-        ),
-        dim=-1,
-    )
-    desired_yaw = torch.atan2(delta[..., 1], delta[..., 0])
-    yaw_error = torch.atan2(torch.sin(desired_yaw - yaw), torch.cos(desired_yaw - yaw))
-    actions.yaw_rate[:, mobile_slots] = torch.clamp(
-        yaw_error * 3.0,
-        min=-math.pi,
-        max=math.pi,
-    )
-    for aerial_slot in (Role.AERIAL, constants.ROLES_PER_TEAM + Role.AERIAL):
-        altitude_error = 1.6 - environment.world.position_z[:, aerial_slot]
-        actions.vertical_velocity[:, aerial_slot] = torch.clamp(
-            altitude_error * 1.5,
-            min=-1.5,
-            max=1.5,
-        )
-
-
 def main() -> None:
     args = _parser().parse_args()
-    if args.steps <= 0 or args.fps <= 0:
-        raise ValueError("--steps and --fps must be positive")
+    if args.duration_s <= 0 or args.duration_s > constants.MATCH_DURATION_S:
+        raise ValueError(f"--duration-s must be in (0, {constants.MATCH_DURATION_S:g}]")
+    if args.steps is not None and args.steps <= 0:
+        raise ValueError("--steps must be positive when provided")
+    if args.capture_every <= 0 or args.fps <= 0:
+        raise ValueError("--capture-every and --fps must be positive")
     if Path(args.output).suffix.lower() != ".gif":
         raise ValueError("--output must end in .gif")
 
@@ -282,8 +264,14 @@ def main() -> None:
             validate_referee=False,
         )
     )
-    opponent = ScriptedOpponent()
+    opponent = TacticalScriptedOpponent(arena=environment.arena)
     environment.reset(seed=args.seed)
+    total_steps = (
+        args.steps
+        if args.steps is not None
+        else math.ceil(args.duration_s / environment.config.policy_dt_s)
+    )
+    replay_speed = environment.config.policy_dt_s * args.capture_every * args.fps
     roles = unit_roles(environment.game.device).cpu()
     teams = unit_teams(environment.game.device).cpu()
     title_font = _font(22, bold=True)
@@ -309,21 +297,36 @@ def main() -> None:
     )
     minimum_clearance_m = torch.inf
 
-    for _ in range(args.steps):
+    simulated_steps = 0
+    for policy_step in range(total_steps):
         actions = opponent.act(environment.game, environment.world)
-        _apply_terrain_demo_routes(actions, environment)
         source_xy = environment.world.position_xy[0].detach().cpu()
         target_slots = resolve_target_slots(actions.target)[0]
         firing = actions.fire[0] & (target_slots >= 0)
         result = environment.step(actions)
-        if bool(result.terminated[0]):
-            environment.reset(torch.tensor([0], device=environment.game.device))
+        simulated_steps += 1
 
         xy = environment.world.position_xy[0].detach().cpu()
+        distance_matrix = torch.cdist(xy, xy)
+        clearance = distance_matrix - radii_m[:, None] - radii_m[None, :]
+        minimum_clearance_m = min(
+            minimum_clearance_m,
+            float(clearance[ground_pair].min()),
+        )
+        capture_frame = (
+            policy_step == 0
+            or (policy_step + 1) % args.capture_every == 0
+            or policy_step + 1 == total_steps
+            or bool(result.terminated[0])
+        )
+        if not capture_frame:
+            continue
+
         yaw = environment.world.yaw[0].detach().cpu()
         hp = environment.game.hp[0].detach().cpu()
         max_hp = environment.game.max_hp[0].detach().cpu()
         alive = environment.game.alive[0].detach().cpu()
+        weak = environment.game.weak[0].detach().cpu()
         trails.append(xy.clone())
 
         image = Image.new("RGB", CANVAS, (6, 15, 23))
@@ -334,19 +337,40 @@ def main() -> None:
         draw.text((CANVAS[0] - MARGIN_X, 48), "BLUE", fill=BLUE, font=score_font, anchor="ra")
 
         elapsed = float(environment.game.elapsed_s[0])
+        remaining_s = max(
+            0,
+            math.ceil(constants.MATCH_DURATION_S - elapsed - 1.0e-6),
+        )
+        clock = f"{remaining_s // 60:02d}:{remaining_s % 60:02d}"
         red_base = int(environment.game.hp[0, Role.BASE])
         blue_base = int(environment.game.hp[0, constants.ROLES_PER_TEAM + Role.BASE])
+        red_outpost = int(environment.game.hp[0, Role.OUTPOST])
+        blue_outpost = int(environment.game.hp[0, constants.ROLES_PER_TEAM + Role.OUTPOST])
         red_coin = int(environment.game.team_coin[0, Team.RED])
         blue_coin = int(environment.game.team_coin[0, Team.BLUE])
+        air_parts = []
+        for team, label in ((Team.RED, "R"), (Team.BLUE, "B")):
+            if bool(environment.game.aerial_support_active[0, team]):
+                air_state = "ON"
+            elif bool(environment.game.aerial_on_pad[0, team]):
+                air_state = "PAD"
+            else:
+                air_state = "PAUSE"
+            air_bank = float(environment.game.aerial_support_bank_s[0, team])
+            air_parts.append(f"{label} {air_state}/{air_bank:.0f}s")
+        air_status = " · ".join(air_parts)
         score = (
-            f"t={elapsed:05.1f}s   "
-            f"{red_base:4d} HP / {red_coin:3d} C   "
-            f"—   {blue_base:4d} HP / {blue_coin:3d} C"
+            f"{clock}   "
+            f"{red_base:4d} B · {red_outpost:4d} O · {red_coin:3d} C   "
+            f"—   {blue_base:4d} B · {blue_outpost:4d} O · {blue_coin:3d} C"
         )
         draw.text((CANVAS[0] // 2, 49), score, fill=(194, 211, 220), font=score_font, anchor="ma")
         draw.text(
             (CANVAS[0] // 2, 67),
-            "28×15m · FIELD CROWN 1°–2° · DIAGRAM-DERIVED PHASE 1 TERRAIN",
+            (
+                f"TACTICAL SCRIPTED BASELINE · {tactical_phase_label(elapsed)} · "
+                f"AIR {air_status} · {replay_speed:.0f}×"
+            ),
             fill=(114, 139, 151),
             font=small_font,
             anchor="mm",
@@ -386,10 +410,11 @@ def main() -> None:
             radius = _meters_to_pixels(float(radii_m[unit]))
             if role == Role.AERIAL:
                 radius = _meters_to_pixels(0.32)
+            outline = (255, 190, 82) if bool(weak[unit]) else (235, 244, 248)
             draw.ellipse(
                 (x - radius, y - radius, x + radius, y + radius),
                 fill=color,
-                outline=(235, 244, 248),
+                outline=outline,
                 width=2,
             )
             heading_length = radius + 9
@@ -424,6 +449,32 @@ def main() -> None:
                     fill=(84, 224, 145),
                 )
 
+        if bool(environment.game.done[0]):
+            winner = int(environment.game.winner[0])
+            winner_text = {
+                int(Winner.RED): "RED WINS",
+                int(Winner.BLUE): "BLUE WINS",
+                int(Winner.DRAW): "DRAW",
+            }.get(winner, "MATCH ENDED")
+            winner_color = (
+                RED if winner == Winner.RED else BLUE if winner == Winner.BLUE else (210, 221, 226)
+            )
+            banner = (CANVAS[0] // 2 - 92, MARGIN_TOP + 12, CANVAS[0] // 2 + 92, MARGIN_TOP + 47)
+            draw.rounded_rectangle(
+                banner,
+                radius=8,
+                fill=(6, 15, 23),
+                outline=winner_color,
+                width=2,
+            )
+            draw.text(
+                (CANVAS[0] // 2, MARGIN_TOP + 29),
+                winner_text,
+                fill=winner_color,
+                font=score_font,
+                anchor="mm",
+            )
+
         draw.text(
             (CANVAS[0] // 2, CANVAS[1] - 16),
             "H hero · E engineer · I infantry · A aerial · S sentry · B base · O outpost",
@@ -433,12 +484,8 @@ def main() -> None:
         )
         frames.append(image.convert("P", palette=Image.Palette.ADAPTIVE, colors=128))
 
-        distance = torch.cdist(xy, xy)
-        clearance = distance - radii_m[:, None] - radii_m[None, :]
-        minimum_clearance_m = min(
-            minimum_clearance_m,
-            float(clearance[ground_pair].min()),
-        )
+        if bool(result.terminated[0]):
+            break
 
     destination = Path(args.output)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -453,6 +500,17 @@ def main() -> None:
         optimize=False,
     )
     print(f"Saved Torch visualization to {destination.resolve()}")
+    simulated_s = simulated_steps * environment.config.policy_dt_s
+    winner_name = {
+        int(Winner.UNDECIDED): "undecided",
+        int(Winner.RED): "red",
+        int(Winner.BLUE): "blue",
+        int(Winner.DRAW): "draw",
+    }[int(environment.game.winner[0])]
+    print(
+        f"Simulated {simulated_s:.1f}s in {len(frames)} frames "
+        f"({len(frames) / args.fps:.1f}s playback); winner={winner_name}"
+    )
     print(f"Minimum ground-unit clearance: {minimum_clearance_m:.4f} m")
     if minimum_clearance_m < -1.0e-4:
         raise RuntimeError("visualized rollout contains overlapping ground units")

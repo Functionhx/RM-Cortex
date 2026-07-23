@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 
 from isaaclab.app import AppLauncher
 
@@ -26,7 +27,10 @@ def main() -> None:
         import torch
 
         from rm_isaac import RMCortexDirectMARLEnv, RMCortexDirectMARLEnvCfg
-        from rm_world import MOBILE_UNIT_SLOTS, terrain_demo_targets
+        from rm_isaac.direct_env_runtime import ROBOT_AGENT_SLOTS
+        from rm_referee import constants
+        from rm_referee.schema import PurchaseKind, Role, Team, Weapon
+        from rm_world import TacticalScriptedOpponent
 
         cfg = RMCortexDirectMARLEnvCfg()
         cfg.scene.num_envs = args.num_envs
@@ -39,61 +43,148 @@ def main() -> None:
             )
             for agent in cfg.possible_agents
         }
-        robot_agents = [
-            agent
-            for agent in cfg.possible_agents
-            if not agent.endswith("_dart") and not agent.endswith("_radar")
-        ]
-        for agent in robot_agents:
-            actions[agent][:, 0] = 0.65
-            actions[agent][:, 4] = 0.50
-            actions[agent][:, 5] = 1.0
-        actions["red_aerial"][:, 6] = 1.0
-        actions["blue_aerial"][:, 6] = 1.0
-        actions["red_radar"][:, 3] = 1.0
-        actions["blue_radar"][:, 3] = 1.0
-
         env.reset()
-        mobile_slots = torch.tensor(MOBILE_UNIT_SLOTS, device=env.device)
+        controller = TacticalScriptedOpponent(arena=env.arena)
         step = 0
         while simulation_app.is_running() and (args.steps == 0 or step < args.steps):
-            target_xy = terrain_demo_targets(
-                float(env.game.elapsed_s[0]),
-                device=env.device,
-                dtype=env.game.dtype,
-            )
-            position = env.world.position_xy[:, mobile_slots]
-            delta = target_xy[None, ...] - position
-            distance = torch.linalg.vector_norm(delta, dim=-1, keepdim=True)
-            desired_world = delta / torch.clamp(distance, min=1.0e-6) * 1.8
-            yaw = env.world.yaw[:, mobile_slots]
-            cosine = torch.cos(yaw)
-            sine = torch.sin(yaw)
-            body_velocity = torch.stack(
-                (
-                    cosine * desired_world[..., 0] + sine * desired_world[..., 1],
-                    -sine * desired_world[..., 0] + cosine * desired_world[..., 1],
-                ),
-                dim=-1,
-            )
-            desired_yaw = torch.atan2(delta[..., 1], delta[..., 0])
-            yaw_error = torch.atan2(
-                torch.sin(desired_yaw - yaw),
-                torch.cos(desired_yaw - yaw),
-            )
-            for index, agent in enumerate(robot_agents):
-                actions[agent][:, :2] = body_velocity[:, index] / 3.0
-                actions[agent][:, 2] = torch.clamp(
-                    yaw_error[:, index] * 3.0 / (2.0 * torch.pi),
+            world_actions = controller.act(env.game, env.world)
+            for action in actions.values():
+                action.zero_()
+
+            for agent, unit_slot in ROBOT_AGENT_SLOTS.items():
+                command = actions[agent]
+                command[:, :2] = torch.clamp(
+                    world_actions.body_velocity_xy[:, unit_slot] / 3.0,
                     min=-1.0,
                     max=1.0,
                 )
-            for agent, unit_slot in (("red_aerial", 4), ("blue_aerial", 12)):
-                altitude_error = 1.6 - env.world.position_z[:, unit_slot]
-                actions[agent][:, 3] = torch.clamp(
-                    altitude_error * 0.75,
-                    min=-0.75,
-                    max=0.75,
+                command[:, 2] = torch.clamp(
+                    world_actions.yaw_rate[:, unit_slot] / (2.0 * math.pi),
+                    min=-1.0,
+                    max=1.0,
+                )
+                command[:, 3] = torch.clamp(
+                    world_actions.vertical_velocity[:, unit_slot] / 2.0,
+                    min=-1.0,
+                    max=1.0,
+                )
+                command[:, 4] = (
+                    world_actions.target[:, unit_slot].to(
+                        command.dtype,
+                    )
+                    / 4.0
+                    - 1.0
+                )
+                command[:, 5] = torch.where(
+                    world_actions.fire[:, unit_slot],
+                    torch.ones_like(command[:, 5]),
+                    -torch.ones_like(command[:, 5]),
+                )
+
+                team = unit_slot // constants.ROLES_PER_TEAM
+                role = unit_slot % constants.ROLES_PER_TEAM
+                if role == Role.HERO:
+                    command[:, 6] = torch.where(
+                        world_actions.hero_deploy[:, team],
+                        1.0,
+                        -1.0,
+                    )
+                elif role == Role.ENGINEER:
+                    command[:, 6] = torch.where(
+                        world_actions.rebuild_outpost[:, unit_slot],
+                        1.0,
+                        -1.0,
+                    )
+                    command[:, 7] = (
+                        world_actions.tech_complete_level[:, team].to(command.dtype) / 2.0 - 1.0
+                    )
+                    command[:, 13] = world_actions.rune_trigger[:, team].to(command.dtype) / 2.0
+                elif role == Role.AERIAL:
+                    command[:, 6] = torch.where(
+                        world_actions.aerial_support[:, team],
+                        1.0,
+                        -1.0,
+                    )
+                elif role == Role.SENTRY:
+                    command[:, 6] = world_actions.sentry_stance[:, team].to(command.dtype) - 1.0
+                    command[:, 7] = torch.where(
+                        world_actions.sentry_claim_ammo[:, team],
+                        1.0,
+                        -1.0,
+                    )
+
+                command[:, 8] = torch.where(
+                    world_actions.remote_heal[:, unit_slot],
+                    1.0,
+                    -1.0,
+                )
+                command[:, 9] = torch.where(
+                    world_actions.immediate_respawn[:, unit_slot],
+                    1.0,
+                    -1.0,
+                )
+                purchase = world_actions.purchase_unit[:, team] == unit_slot
+                command[:, 10] = torch.where(purchase, 1.0, -1.0)
+                command[:, 11] = torch.where(
+                    purchase & (world_actions.purchase_kind[:, team] == int(PurchaseKind.REMOTE)),
+                    1.0,
+                    -1.0,
+                )
+                command[:, 12] = torch.where(
+                    purchase & (world_actions.purchase_weapon[:, team] == int(Weapon.MM42)),
+                    1.0,
+                    -1.0,
+                )
+
+            for team, prefix in ((Team.RED, "red"), (Team.BLUE, "blue")):
+                dart = actions[f"{prefix}_dart"]
+                dart[:, 0] = torch.where(
+                    world_actions.dart_open_gate[:, team],
+                    1.0,
+                    -1.0,
+                )
+                dart[:, 1] = torch.where(
+                    world_actions.dart_close_gate[:, team],
+                    1.0,
+                    -1.0,
+                )
+                dart[:, 2] = torch.where(
+                    world_actions.dart_target[:, team] >= 0,
+                    world_actions.dart_target[:, team].to(dart.dtype) / 2.0 - 1.0,
+                    -torch.ones_like(dart[:, 2]),
+                )
+
+                radar = actions[f"{prefix}_radar"]
+                radar_target = torch.clamp(
+                    world_actions.radar_target[:, team],
+                    min=0,
+                    max=constants.UNIT_COUNT - 1,
+                )
+                radar[:, 0] = radar_target.to(radar.dtype) / 7.5 - 1.0
+                actual_xy = torch.gather(
+                    env.world.position_xy,
+                    1,
+                    radar_target[:, None, None].expand(-1, 1, 2),
+                ).squeeze(1)
+                radar[:, 1:3] = torch.clamp(
+                    (world_actions.radar_report_xy[:, team] - actual_xy) / 2.0,
+                    min=-1.0,
+                    max=1.0,
+                )
+                radar[:, 3] = torch.where(
+                    world_actions.radar_illuminate[:, team],
+                    1.0,
+                    -1.0,
+                )
+                radar[:, 4] = torch.where(
+                    world_actions.radar_double[:, team],
+                    1.0,
+                    -1.0,
+                )
+                radar[:, 5] = torch.where(
+                    world_actions.radar_key_solved[:, team],
+                    1.0,
+                    -1.0,
                 )
             env.step(actions)
             step += 1

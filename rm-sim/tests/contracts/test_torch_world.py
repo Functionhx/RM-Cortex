@@ -7,16 +7,23 @@ import torch
 
 from rm_referee import GameState
 from rm_referee import constants
-from rm_referee.schema import Role, Team, slot, unit_roles
+from rm_referee.schema import PurchaseKind, Role, Team, Weapon, Zone, slot, unit_roles
 from rm_world import (
+    BLUE_OUTPOST_CENTER_XY,
+    RED_OUTPOST_CENTER_XY,
+    ArenaGeometry,
     KinematicCommands,
     KinematicConfig,
     KinematicState,
     KinematicWorld,
     ScriptedOpponent,
+    TacticalMission,
+    TacticalScriptedOpponent,
     TorchEnvConfig,
     TorchRMArena,
-    terrain_demo_targets,
+    WorldActions,
+    aerial_sortie_state,
+    tactical_route_waypoints,
 )
 
 
@@ -41,16 +48,126 @@ def _minimum_ground_clearance(position_xy: torch.Tensor) -> torch.Tensor:
     return clearance[:, valid].amin(dim=-1)
 
 
-@pytest.mark.parametrize("elapsed_s", [0.0, 6.0, 13.0, 22.0, 100.0])
-def test_visualization_waypoints_remain_center_symmetric(elapsed_s: float) -> None:
-    targets = terrain_demo_targets(
-        elapsed_s,
+@pytest.mark.parametrize("mission", list(TacticalMission))
+def test_tactical_routes_remain_center_symmetric(mission: TacticalMission) -> None:
+    red = tactical_route_waypoints(
+        mission,
+        Team.RED,
+        device="cpu",
+        dtype=torch.float32,
+    )
+    blue = tactical_route_waypoints(
+        mission,
+        Team.BLUE,
         device="cpu",
         dtype=torch.float32,
     )
 
-    assert targets.shape == (12, 2)
-    assert torch.allclose(targets[:6], -targets[6:])
+    assert red.ndim == 2
+    assert red.shape[-1] == 2
+    assert torch.allclose(red, -blue)
+
+
+def test_outposts_use_figure_4_5_diagonal_centers_and_zones() -> None:
+    game = GameState.create(1)
+    arena = ArenaGeometry()
+    world = KinematicState.spawn(game, arena)
+    red = slot(Team.RED, Role.OUTPOST)
+    blue = slot(Team.BLUE, Role.OUTPOST)
+
+    assert torch.allclose(
+        world.position_xy[0, red],
+        torch.tensor(RED_OUTPOST_CENTER_XY),
+    )
+    assert torch.allclose(
+        world.position_xy[0, blue],
+        torch.tensor(BLUE_OUTPOST_CENTER_XY),
+    )
+    occupancy = arena.zone_occupancy(world.position_xy)
+    assert occupancy[0, red, Zone.OUTPOST]
+    assert occupancy[0, blue, Zone.OUTPOST]
+
+
+def test_aerial_sortie_schedule_has_explicit_flight_and_return_windows() -> None:
+    elapsed = torch.tensor(
+        (0.0, 5.0, 16.9, 17.0, 24.9, 25.0, 74.9, 75.0, 84.9, 85.0),
+    )
+
+    requested, returning = aerial_sortie_state(elapsed)
+
+    assert requested.tolist() == [
+        False,
+        True,
+        True,
+        True,
+        True,
+        False,
+        True,
+        True,
+        True,
+        False,
+    ]
+    assert returning.tolist() == [
+        False,
+        False,
+        False,
+        True,
+        True,
+        False,
+        False,
+        True,
+        True,
+        False,
+    ]
+
+
+def test_aerial_pad_contact_requires_altitude_and_horizontal_footprint() -> None:
+    environment = TorchRMArena(
+        TorchEnvConfig(num_envs=1, validate_referee=False),
+    )
+    aerial = slot(Team.RED, Role.AERIAL)
+    environment.world.position_xy[0, aerial] = torch.tensor((0.0, 0.0))
+    environment.world.position_z[0, aerial] = 0.0
+
+    environment.step(WorldActions.zeros(environment.game))
+
+    assert not environment.game.aerial_on_pad[0, Team.RED]
+
+
+def test_tactical_controller_assigns_distinct_roles_and_symmetric_teams() -> None:
+    game = GameState.create(1)
+    world = KinematicState.spawn(game)
+    controller = TacticalScriptedOpponent()
+
+    actions = controller.act(game, world)
+
+    assert not torch.allclose(
+        actions.body_velocity_xy[:, Role.ENGINEER],
+        actions.body_velocity_xy[:, Role.INFANTRY_3],
+    )
+    assert torch.allclose(
+        actions.body_velocity_xy[:, : Role.BASE],
+        actions.body_velocity_xy[
+            :,
+            constants.ROLES_PER_TEAM : constants.ROLES_PER_TEAM + Role.BASE,
+        ],
+        atol=1.0e-5,
+    )
+    assert not actions.aerial_support.any()
+
+
+def test_tactical_controller_uses_remote_flow_for_infantry_ammo() -> None:
+    game = GameState.create(1)
+    world = KinematicState.spawn(game)
+    infantry_3 = slot(Team.RED, Role.INFANTRY_3)
+    infantry_4 = slot(Team.RED, Role.INFANTRY_4)
+    game.out_of_combat_s[0, (infantry_3, infantry_4)] = constants.OUT_OF_COMBAT_S
+
+    actions = TacticalScriptedOpponent().act(game, world)
+
+    assert actions.purchase_unit[0, Team.RED] == infantry_3
+    assert actions.purchase_weapon[0, Team.RED] == Weapon.MM17
+    assert actions.purchase_kind[0, Team.RED] == PurchaseKind.REMOTE
 
 
 def test_body_velocity_is_rotated_and_batched() -> None:
@@ -107,7 +224,14 @@ def test_exactly_coincident_ground_units_are_separated() -> None:
     assert separation.item() >= 0.80 - 1.0e-4
 
 
-def test_scripted_rollout_keeps_every_ground_footprint_disjoint() -> None:
+@pytest.mark.parametrize(
+    "policy",
+    (ScriptedOpponent(), TacticalScriptedOpponent()),
+    ids=("objective", "tactical"),
+)
+def test_scripted_rollout_keeps_every_ground_footprint_disjoint(
+    policy: ScriptedOpponent | TacticalScriptedOpponent,
+) -> None:
     environment = TorchRMArena(
         TorchEnvConfig(
             num_envs=1,
@@ -115,7 +239,6 @@ def test_scripted_rollout_keeps_every_ground_footprint_disjoint() -> None:
             seed=7,
         )
     )
-    policy = ScriptedOpponent()
     minimum_clearance = torch.tensor(torch.inf)
     minimum_static_clearance = torch.tensor(torch.inf)
     roles = unit_roles(environment.game.device)

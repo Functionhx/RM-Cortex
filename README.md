@@ -52,7 +52,7 @@ pytest -q
 python scripts/train.py --updates 1 --num-envs 8
 ```
 
-The implementation now includes the vectorized referee, a 2.5D Torch arena with LOS and armor geometry, deterministic scripted play, an import-safe Isaac Lab `DirectMARLEnv`, and a parameter-shared MAPPO baseline with centralized critic, action masks, checkpoints, and evaluation.
+The implementation now includes the vectorized referee, a 2.5D Torch arena with LOS and armor geometry, objective and role-specific tactical scripted baselines, an import-safe Isaac Lab `DirectMARLEnv`, and a parameter-shared MAPPO baseline with centralized critic, action masks, checkpoints, and evaluation.
 
 Run `python scripts/benchmark_world.py --num-envs 1024 4096` for Torch-world throughput. Inside an Isaac Lab launcher environment, run `PYTHONPATH=src /path/to/IsaacLab/isaaclab.sh -p scripts/isaac_smoke.py --headless` to validate the optional scene backend.
 
@@ -63,17 +63,17 @@ Export a dependency-light 2D match animation:
 ```bash
 cd rm-sim
 python -m pip install -e ".[visualization]"
-python scripts/visualize_torch.py --steps 300 --fps 10
+python scripts/visualize_torch.py
 ```
 
-The ignored output `outputs/torch_demo.gif` shows unit roles, headings, trails, health, fire lines, team resources, and diagram-derived terrain: the field crown, highlands, roads, ramps, tunnels, rough sections, and fortresses. The exporter verifies that ground-unit footprints never overlap. To open the interactive 3D scene from a graphical desktop:
+The ignored output `outputs/torch_demo.gif` simulates the complete official 420-second match and samples one frame per simulated second into an approximately 21-second replay. It uses a deterministic tactical baseline—not a trained checkpoint—with separate hero deployment, engineer support, infantry lanes, sentry defense, objective pressure, weak-state recovery, official ammunition exchange, and banked aerial-support sorties. The aerial launches only while support is requested and free time remains; it cannot fire on the pad, while support is paused, or while radar-locked. Sortie timing is a tactical policy, not an official fixed window. The replay also shows headings, trails, health, fire lines, resources, and diagram-derived terrain. Outposts use the diagonal centers dimensioned in manual figure 4-5, and the exporter rejects any ground-footprint overlap. Use `--steps 300` only for a short smoke export.
 
 ```bash
 PYTHONPATH=src /path/to/IsaacLab/isaaclab.sh \
   -p scripts/visualize_isaac.py --num-envs 1
 ```
 
-Add `--device cpu` when CUDA simulation is unavailable or GPU memory is occupied. The Isaac scene builds the same terrain primitives and synchronizes lightweight unit markers from the authoritative Torch world; it does not introduce a second gameplay state. Terrain placement is an explicit Phase 1 `[SIM]` approximation, not official CAD.
+Add `--device cpu` when CUDA simulation is unavailable or GPU memory is occupied. The Isaac scene runs the same tactical controller, terrain primitives, and authoritative Torch game state; it does not introduce a second gameplay state. Terrain placement beyond explicitly dimensioned modules remains a Phase 1 `[SIM]` approximation, not official CAD.
 
 ## Design principles
 

@@ -29,7 +29,7 @@ class KinematicConfig:
     boundary_margin_m: float = 0.0
     enable_static_collisions: bool = False
     enable_unit_collisions: bool = False
-    collision_iterations: int = 2
+    collision_iterations: int = 4
     collision_clearance_m: float = 0.05
 
 

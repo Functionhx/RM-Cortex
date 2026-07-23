@@ -249,7 +249,15 @@ class TorchRuleBackend:
             [slot(Team.RED, Role.AERIAL), slot(Team.BLUE, Role.AERIAL)],
             device=state.device,
         )
-        inputs.aerial_on_pad.copy_(world.position_z[:, aerial_slots] <= 0.05)
+        aerial_xy = world.position_xy[:, aerial_slots]
+        pad_xy = self.arena.aerial_pad_centers(
+            device=state.device,
+            dtype=state.dtype,
+        )
+        inputs.aerial_on_pad.copy_(
+            (world.position_z[:, aerial_slots] <= 0.05)
+            & (torch.linalg.vector_norm(aerial_xy - pad_xy[None, :, :], dim=-1) <= 1.0)
+        )
         inputs.radar_illuminating.copy_(actions.radar_illuminate)
         inputs.outpost_rebuild_request.copy_(actions.rebuild_outpost)
         inputs.tech_complete_level.copy_(actions.tech_complete_level)

@@ -12,6 +12,17 @@ from rm_referee.schema import Role, Zone, unit_roles, unit_teams
 from rm_referee.state import GameState
 
 
+# Manual V1.5.0 p. 34, figure 4-5. The blue outpost is 17,008mm
+# from the red short edge and 3,643mm from the north long edge.
+# With the field origin at center, the paired centers rotate by 180 degrees.
+RED_OUTPOST_CENTER_XY = (-3.008, -3.643)
+BLUE_OUTPOST_CENTER_XY = (3.008, 3.643)
+# Figure 4-5 placement is diagram-derived here because the pad center is not
+# separately dimensioned. Keep it centralized for spawn and contact checks.
+RED_AERIAL_PAD_CENTER_XY = (-13.0, 5.0)
+BLUE_AERIAL_PAD_CENTER_XY = (13.0, -5.0)
+
+
 @dataclass(frozen=True)
 class TerrainPrimitive:
     """Diagram-derived ``[SIM]`` terrain surface.
@@ -282,6 +293,34 @@ class ArenaGeometry:
             )
         return self._obstacle_cache[key]
 
+    def outpost_centers(
+        self,
+        *,
+        device: torch.device | str,
+        dtype: torch.dtype,
+    ) -> Tensor:
+        """Return the figure 4-5 outpost centers in red/blue team order."""
+
+        return torch.tensor(
+            (RED_OUTPOST_CENTER_XY, BLUE_OUTPOST_CENTER_XY),
+            device=device,
+            dtype=dtype,
+        )
+
+    def aerial_pad_centers(
+        self,
+        *,
+        device: torch.device | str,
+        dtype: torch.dtype,
+    ) -> Tensor:
+        """Return the diagram-derived ``[SIM]`` aerial pad centers."""
+
+        return torch.tensor(
+            (RED_AERIAL_PAD_CENTER_XY, BLUE_AERIAL_PAD_CENTER_XY),
+            device=device,
+            dtype=dtype,
+        )
+
     def _terrain_tensors(
         self,
         *,
@@ -333,10 +372,10 @@ class ArenaGeometry:
                 (-12.0, -2.0),
                 (-10.0, -3.0),
                 (-10.0, 3.0),
-                (-13.0, 5.0),
+                RED_AERIAL_PAD_CENTER_XY,
                 (-9.0, 0.0),
                 (-12.5, 0.0),
-                (-6.5, 0.0),
+                RED_OUTPOST_CENTER_XY,
             ),
             device=game.device,
             dtype=game.dtype,
@@ -481,7 +520,7 @@ class ArenaGeometry:
                 (-12.3, 0.0),  # base
                 (0.0, 0.0),  # central high
                 (-8.0, 4.8),  # trapezoid high
-                (-6.5, 0.0),  # outpost
+                RED_OUTPOST_CENTER_XY,  # outpost (figure 4-5)
                 (-3.8, -4.2),  # own fortress
                 (3.8, 4.2),  # enemy fortress
                 (-0.9, -1.8),  # assembly

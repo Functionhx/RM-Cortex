@@ -49,7 +49,7 @@ pytest -q
 python scripts/train.py --updates 1 --num-envs 8
 ```
 
-当前实现已经包含向量化裁判、带 LOS 与装甲几何的 2.5D Torch 场地、确定性脚本对手、可安全选装的 Isaac Lab `DirectMARLEnv`，以及带集中式 critic、动作掩码、checkpoint 和评估流程的参数共享 MAPPO 基线。
+当前实现已经包含向量化裁判、带 LOS 与装甲几何的 2.5D Torch 场地、目标优先与分角色战术两类脚本基线、可安全选装的 Isaac Lab `DirectMARLEnv`，以及带集中式 critic、动作掩码、checkpoint 和评估流程的参数共享 MAPPO 基线。
 
 使用 `python scripts/benchmark_world.py --num-envs 1024 4096` 测量 Torch World 吞吐；在 Isaac Lab 启动环境中使用 `PYTHONPATH=src /path/to/IsaacLab/isaaclab.sh -p scripts/isaac_smoke.py --headless` 验证可选场景后端。
 
@@ -60,17 +60,17 @@ python scripts/train.py --updates 1 --num-envs 8
 ```bash
 cd rm-sim
 python -m pip install -e ".[visualization]"
-python scripts/visualize_torch.py --steps 300 --fps 10
+python scripts/visualize_torch.py
 ```
 
-生成但不纳入版本控制的 `outputs/torch_demo.gif` 会显示角色、朝向、轨迹、血条、射击线、队伍资源，以及依据图纸构建的整体横坡、高地、公路、坡道、隧道、起伏路与堡垒。导出器还会验证地面单位的碰撞外廓全程不重叠。在带图形桌面的终端中可启动交互式 3D 场景：
+生成但不纳入版本控制的 `outputs/torch_demo.gif` 会完整仿真官方 420 秒对局，并按每个仿真秒采样一帧，压缩为约 21 秒回放。演示使用的是确定性战术脚本而非训练好的 checkpoint，包含英雄部署、工程支援、步兵分路、哨兵防守、目标集火、虚弱撤回、官方购弹流程和按库存分波次出动的空中支援；同时显示朝向、轨迹、血条、射击线、资源与图纸地形。无人机仅在请求支援且免费库存可用时起飞，停机坪上、暂停支援或被雷达锁定时不能开火；具体出动波次属于战术策略，并非官方固定窗口。前哨站采用手册图 4-5 标注的对角线中心，导出器发现任何地面外廓重叠都会直接失败。仅需短时冒烟时可追加 `--steps 300`。
 
 ```bash
 PYTHONPATH=src /path/to/IsaacLab/isaaclab.sh \
   -p scripts/visualize_isaac.py --num-envs 1
 ```
 
-CUDA 仿真不可用或显存被占用时可追加 `--device cpu`。Isaac 场景构建同一组地形 primitive，并使用由权威 Torch World 同步的轻量单位标记，不会引入第二套比赛状态。当前地形位置是明确标记的 Phase 1 `[SIM]` 近似，不是官方 CAD。
+CUDA 仿真不可用或显存被占用时可追加 `--device cpu`。Isaac 场景运行同一战术控制器、同一组地形 primitive 与权威 Torch 比赛状态，不会引入第二套规则。除明确标注尺寸的模块外，其余地形位置仍是 Phase 1 `[SIM]` 近似，不是官方 CAD。
 
 ## 设计原则
 

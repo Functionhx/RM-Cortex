@@ -70,3 +70,99 @@ def test_radar_countermeasure_locks_aerial_after_triangular_progress() -> None:
     assert state.alive[0, aerial]
     assert state.aerial_counter_uses[0, Team.BLUE] == 1
     assert state.aerial_counter_lock_s[0, Team.BLUE] == pytest.approx(45)
+
+
+def test_aerial_support_bank_can_pause_and_receives_minute_grant() -> None:
+    state = GameState.create(1)
+    referee = Referee()
+    aerial = slot(Team.RED, Role.AERIAL)
+    assert state.aerial_support_bank_s[0, Team.RED] == 30
+    assert state.ammo[0, aerial, Weapon.MM17] == 750
+
+    active = RuleInputs.empty(state)
+    active.aerial_support_request[0, Team.RED] = True
+    active.aerial_on_pad[0, Team.RED] = False
+    state, _ = referee.step(state, active)
+    assert state.alive[0, aerial]
+    assert state.aerial_support_bank_s[0, Team.RED] == pytest.approx(29.9)
+
+    paused_bank = state.aerial_support_bank_s[0, Team.RED].item()
+    state, _ = referee.step(state, RuleInputs.empty(state))
+    assert not state.alive[0, aerial]
+    assert state.aerial_support_bank_s[0, Team.RED] == pytest.approx(paused_bank)
+
+    state.elapsed_s[0] = 59.95
+    state, _ = referee.step(state, RuleInputs.empty(state))
+    assert state.aerial_support_bank_s[0, Team.RED] == pytest.approx(
+        paused_bank + 20,
+    )
+
+
+def test_aerial_can_only_fire_during_support_and_off_the_pad() -> None:
+    state = GameState.create(1)
+    referee = Referee()
+    aerial = slot(Team.RED, Role.AERIAL)
+
+    unsupported = RuleInputs.empty(state)
+    unsupported.aerial_on_pad[0, Team.RED] = False
+    unsupported.shots_fired[0, aerial, Weapon.MM17] = 1
+    state, events = referee.step(state, unsupported)
+    assert events.shots_fired[0, aerial, Weapon.MM17] == 0
+    assert state.ammo[0, aerial, Weapon.MM17] == 750
+
+    on_pad = RuleInputs.empty(state)
+    on_pad.aerial_support_request[0, Team.RED] = True
+    on_pad.aerial_on_pad[0, Team.RED] = True
+    on_pad.shots_fired[0, aerial, Weapon.MM17] = 1
+    state, events = referee.step(state, on_pad)
+    assert events.shots_fired[0, aerial, Weapon.MM17] == 0
+    assert state.ammo[0, aerial, Weapon.MM17] == 750
+
+    airborne = RuleInputs.empty(state)
+    airborne.aerial_support_request[0, Team.RED] = True
+    airborne.aerial_on_pad[0, Team.RED] = False
+    airborne.shots_fired[0, aerial, Weapon.MM17] = 1
+    state, events = referee.step(state, airborne)
+    assert events.shots_fired[0, aerial, Weapon.MM17] == 1
+    assert state.ammo[0, aerial, Weapon.MM17] == 749
+
+
+def test_radar_countermeasure_blocks_aerial_fire_during_support() -> None:
+    state = GameState.create(1)
+    referee = Referee()
+    aerial = slot(Team.BLUE, Role.AERIAL)
+    state.aerial_counter_lock_s[0, Team.BLUE] = 45
+
+    locked = RuleInputs.empty(state)
+    locked.aerial_support_request[0, Team.BLUE] = True
+    locked.aerial_on_pad[0, Team.BLUE] = False
+    locked.shots_fired[0, aerial, Weapon.MM17] = 1
+
+    state, events = referee.step(state, locked)
+
+    assert state.alive[0, aerial]
+    assert events.shots_fired[0, aerial, Weapon.MM17] == 0
+    assert state.ammo[0, aerial, Weapon.MM17] == 750
+
+
+def test_aerial_paid_support_costs_one_coin_per_second_then_stops() -> None:
+    state = GameState.create(1)
+    referee = Referee()
+    state.aerial_support_bank_s[0, Team.RED] = 0
+    state.team_coin[0, Team.RED] = 1
+
+    for _ in range(10):
+        paid = RuleInputs.empty(state)
+        paid.aerial_support_request[0, Team.RED] = True
+        paid.aerial_on_pad[0, Team.RED] = False
+        state, _ = referee.step(state, paid)
+
+    assert state.aerial_support_active[0, Team.RED]
+    assert state.team_coin[0, Team.RED] == 0
+
+    no_coin = RuleInputs.empty(state)
+    no_coin.aerial_support_request[0, Team.RED] = True
+    no_coin.aerial_on_pad[0, Team.RED] = False
+    state, _ = referee.step(state, no_coin)
+
+    assert not state.aerial_support_active[0, Team.RED]
