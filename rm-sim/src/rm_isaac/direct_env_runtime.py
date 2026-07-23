@@ -39,7 +39,7 @@ from rm_referee.referee import Referee
 from rm_referee.schema import Role, Team, slot
 from rm_referee.state import GameState
 from rm_world.actions import WorldActions
-from rm_world.arena import ArenaGeometry
+from rm_world.arena import ArenaGeometry, TerrainPrimitive
 from rm_world.backend import TorchRuleBackend
 from rm_world.kinematics import KinematicConfig, KinematicState, KinematicWorld
 from rm_world.observations import ObservationBuilder
@@ -95,16 +95,57 @@ AGENT_OBSERVATION_SLOT = {
     "blue_radar": slot(Team.BLUE, Role.OUTPOST),
 }
 ACTION_DIM = 14
-UNIT_HEIGHTS = (
-    0.40,
-    0.42,
-    0.38,
-    0.38,
+UNIT_HALF_HEIGHTS = (
     0.20,
-    0.58,
-    1.18,
-    1.88,
+    0.21,
+    0.19,
+    0.19,
+    0.10,
+    0.29,
+    0.59,
+    0.94,
 ) * constants.TEAM_COUNT
+TERRAIN_COLORS = {
+    "central": (0.24, 0.29, 0.32),
+    "assembly": (0.30, 0.34, 0.36),
+    "trapezoid": (0.22, 0.27, 0.30),
+    "ramp": (0.34, 0.38, 0.40),
+    "road": (0.19, 0.24, 0.27),
+    "fly_ramp": (0.38, 0.40, 0.40),
+    "rough": (0.16, 0.21, 0.24),
+    "fortress": (0.32, 0.35, 0.36),
+    "tunnel": (0.04, 0.07, 0.09),
+}
+
+
+def _quaternion_from_euler(
+    roll: float = 0.0,
+    pitch: float = 0.0,
+    yaw: float = 0.0,
+) -> tuple[float, float, float, float]:
+    """Return a scalar-first quaternion from XYZ Euler angles."""
+
+    cr = math.cos(roll / 2)
+    sr = math.sin(roll / 2)
+    cp = math.cos(pitch / 2)
+    sp = math.sin(pitch / 2)
+    cy = math.cos(yaw / 2)
+    sy = math.sin(yaw / 2)
+    return (
+        cr * cp * cy + sr * sp * sy,
+        sr * cp * cy - cr * sp * sy,
+        cr * sp * cy + sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+    )
+
+
+def _terrain_color(primitive: TerrainPrimitive) -> tuple[float, float, float]:
+    color = TERRAIN_COLORS[primitive.category]
+    if primitive.team == Team.RED:
+        return (min(color[0] + 0.12, 1.0), color[1], color[2])
+    if primitive.team == Team.BLUE:
+        return (color[0], color[1], min(color[2] + 0.16, 1.0))
+    return color
 
 
 def _unit_marker(role: int, team: int) -> object:
@@ -202,7 +243,7 @@ class RMCortexDirectMARLEnv(DirectMARLEnv):
         self.rule_adapter = IsaacRuleAdapter()
         self.world_model = KinematicWorld(
             config=KinematicConfig(
-                boundary_margin_m=0.35,
+                boundary_margin_m=0.40,
                 enable_static_collisions=True,
                 enable_unit_collisions=True,
             ),
@@ -225,30 +266,100 @@ class RMCortexDirectMARLEnv(DirectMARLEnv):
 
     def _setup_scene(self) -> None:
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
-        floor_cfg = sim_utils.CuboidCfg(
-            size=(28.0, 15.0, 0.04),
-            visual_material=sim_utils.PreviewSurfaceCfg(
-                diffuse_color=(0.055, 0.075, 0.085),
-                roughness=0.85,
-            ),
-        )
-        floor_cfg.func(
-            "/World/envs/env_0/ArenaFloor",
-            floor_cfg,
-            translation=(0.0, 0.0, 0.0),
-        )
-        stripe_cfg = sim_utils.CuboidCfg(
-            size=(0.06, 15.0, 0.012),
-            visual_material=sim_utils.PreviewSurfaceCfg(
-                diffuse_color=(0.75, 0.78, 0.82),
-            ),
-        )
-        stripe_cfg.func(
-            "/World/envs/env_0/CenterLine",
-            stripe_cfg,
-            translation=(0.0, 0.0, 0.03),
-        )
-        for index, (x_min, x_max, y_min, y_max) in enumerate(ArenaGeometry().config.obstacles):
+        arena = ArenaGeometry()
+        crown_angle = math.radians(arena.config.field_crown_slope_deg)
+        crown_height = arena.config.field_width_m / 2 * math.tan(crown_angle)
+        half_width = arena.config.field_width_m / 2
+        floor_length = math.hypot(half_width, crown_height)
+        for side, y_center, roll in (
+            ("North", half_width / 2, -crown_angle),
+            ("South", -half_width / 2, crown_angle),
+        ):
+            floor_cfg = sim_utils.CuboidCfg(
+                size=(arena.config.field_length_m, floor_length, 0.04),
+                visual_material=sim_utils.PreviewSurfaceCfg(
+                    diffuse_color=(0.055, 0.075, 0.085),
+                    roughness=0.85,
+                ),
+            )
+            floor_cfg.func(
+                f"/World/envs/env_0/ArenaFloor{side}",
+                floor_cfg,
+                translation=(0.0, y_center, crown_height / 2 - 0.02),
+                orientation=_quaternion_from_euler(roll=roll),
+            )
+            stripe_cfg = sim_utils.CuboidCfg(
+                size=(0.06, floor_length, 0.012),
+                visual_material=sim_utils.PreviewSurfaceCfg(
+                    diffuse_color=(0.75, 0.78, 0.82),
+                ),
+            )
+            stripe_cfg.func(
+                f"/World/envs/env_0/CenterLine{side}",
+                stripe_cfg,
+                translation=(0.0, y_center, crown_height / 2 + 0.012),
+                orientation=_quaternion_from_euler(roll=roll),
+            )
+
+        for primitive in arena.config.terrain:
+            yaw = math.radians(primitive.yaw_deg)
+            crown = max(
+                arena.config.field_width_m / 2 - abs(primitive.center_xy[1]),
+                0.0,
+            ) * math.tan(
+                crown_angle,
+            )
+            if primitive.category == "tunnel":
+                roof_cfg = sim_utils.CuboidCfg(
+                    size=(*primitive.size_xy, 0.08),
+                    visual_material=sim_utils.PreviewSurfaceCfg(
+                        diffuse_color=_terrain_color(primitive),
+                        metallic=0.25,
+                    ),
+                )
+                roof_cfg.func(
+                    f"/World/envs/env_0/Terrain_{primitive.name}",
+                    roof_cfg,
+                    translation=(*primitive.center_xy, crown + 0.48),
+                    orientation=_quaternion_from_euler(yaw=yaw),
+                )
+                continue
+
+            elevation_delta = primitive.elevation_end_m - primitive.elevation_start_m
+            if abs(elevation_delta) < 1.0e-6:
+                height = max(primitive.elevation_start_m, 0.025)
+                size = (*primitive.size_xy, height)
+                translation_z = crown + height / 2
+                pitch = 0.0
+            else:
+                height = 0.055
+                slope_length = math.hypot(primitive.size_xy[0], elevation_delta)
+                size = (slope_length, primitive.size_xy[1], height)
+                translation_z = (
+                    crown
+                    + (primitive.elevation_start_m + primitive.elevation_end_m) / 2
+                    - height / 2
+                )
+                pitch = -math.atan2(elevation_delta, primitive.size_xy[0])
+            terrain_cfg = sim_utils.CuboidCfg(
+                size=size,
+                visual_material=sim_utils.PreviewSurfaceCfg(
+                    diffuse_color=_terrain_color(primitive),
+                    roughness=0.72,
+                ),
+            )
+            terrain_cfg.func(
+                f"/World/envs/env_0/Terrain_{primitive.name}",
+                terrain_cfg,
+                translation=(*primitive.center_xy, translation_z),
+                orientation=_quaternion_from_euler(pitch=pitch, yaw=yaw),
+            )
+
+        for index, (x_min, x_max, y_min, y_max) in enumerate(arena.config.obstacles):
+            center_xy = ((x_min + x_max) / 2, (y_min + y_max) / 2)
+            surface_z = float(
+                arena.terrain_height(torch.tensor(center_xy, dtype=torch.float32)).item()
+            )
             block_cfg = sim_utils.CuboidCfg(
                 size=(x_max - x_min, y_max - y_min, 0.55),
                 visual_material=sim_utils.PreviewSurfaceCfg(
@@ -260,9 +371,8 @@ class RMCortexDirectMARLEnv(DirectMARLEnv):
                 f"/World/envs/env_0/Obstacle_{index}",
                 block_cfg,
                 translation=(
-                    (x_min + x_max) / 2,
-                    (y_min + y_max) / 2,
-                    0.275,
+                    *center_xy,
+                    surface_z + 0.275,
                 ),
             )
         self.scene.clone_environments(copy_from_source=False)
@@ -414,7 +524,7 @@ class RMCortexDirectMARLEnv(DirectMARLEnv):
         if self.unit_markers is None:
             return
         half_height = torch.tensor(
-            UNIT_HEIGHTS,
+            UNIT_HALF_HEIGHTS,
             device=self.device,
             dtype=self.game.dtype,
         ).view(1, constants.UNIT_COUNT)
@@ -423,8 +533,13 @@ class RMCortexDirectMARLEnv(DirectMARLEnv):
             device=self.device,
             dtype=self.game.dtype,
         )
+        vertical_scale = torch.where(
+            self.game.alive,
+            torch.ones_like(self.world.position_z),
+            torch.full_like(self.world.position_z, 0.25),
+        )
         translations[..., :2] = self.world.position_xy + self.scene.env_origins[:, None, :2]
-        translations[..., 2] = self.world.position_z + half_height
+        translations[..., 2] = self.world.position_z + half_height * vertical_scale
         orientations = torch.zeros(
             (self.num_envs, constants.UNIT_COUNT, 4),
             device=self.device,
@@ -432,11 +547,8 @@ class RMCortexDirectMARLEnv(DirectMARLEnv):
         )
         orientations[..., 0] = torch.cos(self.world.yaw / 2)
         orientations[..., 3] = torch.sin(self.world.yaw / 2)
-        scales = torch.where(
-            self.game.alive[..., None],
-            torch.ones_like(translations),
-            torch.full_like(translations, 0.08),
-        )
+        scales = torch.ones_like(translations)
+        scales[..., 2] = vertical_scale
         marker_indices = (
             torch.arange(constants.UNIT_COUNT, device=self.device)
             .view(1, -1)

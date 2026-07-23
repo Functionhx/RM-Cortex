@@ -104,7 +104,7 @@ class TorchRMArena:
         )
         self.world_model = KinematicWorld(
             config=KinematicConfig(
-                boundary_margin_m=0.35,
+                boundary_margin_m=0.40,
                 enable_static_collisions=True,
                 enable_unit_collisions=True,
             ),

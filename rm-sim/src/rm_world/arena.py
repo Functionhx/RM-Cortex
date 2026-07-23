@@ -13,18 +13,245 @@ from rm_referee.state import GameState
 
 
 @dataclass(frozen=True)
+class TerrainPrimitive:
+    """Diagram-derived ``[SIM]`` terrain surface.
+
+    Dimensions and slopes follow rule-manual figures 4-5 and 4-25--4-37.
+    Placements remain approximate until official CAD/USD assets are available.
+    Elevation changes along the primitive's local x-axis.
+    """
+
+    name: str
+    center_xy: tuple[float, float]
+    size_xy: tuple[float, float]
+    elevation_start_m: float
+    elevation_end_m: float
+    yaw_deg: float = 0.0
+    category: str = "platform"
+    team: int | None = None
+
+
+DEFAULT_TERRAIN: tuple[TerrainPrimitive, ...] = (
+    TerrainPrimitive(
+        "central_highland",
+        (0.0, 0.0),
+        (5.8, 6.4),
+        0.35,
+        0.35,
+        category="central",
+    ),
+    TerrainPrimitive(
+        "central_north_ramp",
+        (0.0, 4.25),
+        (2.1, 5.8),
+        0.35,
+        0.0,
+        yaw_deg=90.0,
+        category="ramp",
+    ),
+    TerrainPrimitive(
+        "central_south_ramp",
+        (0.0, -4.25),
+        (2.1, 5.8),
+        0.0,
+        0.35,
+        yaw_deg=90.0,
+        category="ramp",
+    ),
+    TerrainPrimitive(
+        "red_assembly",
+        (-3.2, 0.0),
+        (1.3, 3.0),
+        0.25,
+        0.25,
+        category="assembly",
+        team=0,
+    ),
+    TerrainPrimitive(
+        "blue_assembly",
+        (3.2, 0.0),
+        (1.3, 3.0),
+        0.25,
+        0.25,
+        category="assembly",
+        team=1,
+    ),
+    TerrainPrimitive(
+        "red_trapezoid_highland",
+        (-9.45, 5.55),
+        (6.5, 2.4),
+        0.30,
+        0.30,
+        category="trapezoid",
+        team=0,
+    ),
+    TerrainPrimitive(
+        "red_trapezoid_ramp",
+        (-6.8, 3.9),
+        (3.0, 1.6),
+        0.0,
+        0.30,
+        yaw_deg=135.0,
+        category="ramp",
+        team=0,
+    ),
+    TerrainPrimitive(
+        "blue_trapezoid_highland",
+        (9.45, -5.55),
+        (6.5, 2.4),
+        0.30,
+        0.30,
+        yaw_deg=180.0,
+        category="trapezoid",
+        team=1,
+    ),
+    TerrainPrimitive(
+        "blue_trapezoid_ramp",
+        (6.8, -3.9),
+        (3.0, 1.6),
+        0.0,
+        0.30,
+        yaw_deg=315.0,
+        category="ramp",
+        team=1,
+    ),
+    TerrainPrimitive(
+        "red_road",
+        (-9.5, -5.4),
+        (6.5, 2.0),
+        0.25,
+        0.25,
+        category="road",
+        team=0,
+    ),
+    TerrainPrimitive(
+        "red_road_link",
+        (-5.1, -4.4),
+        (3.0, 1.5),
+        0.25,
+        0.35,
+        yaw_deg=35.0,
+        category="road",
+        team=0,
+    ),
+    TerrainPrimitive(
+        "blue_road",
+        (9.5, 5.4),
+        (6.5, 2.0),
+        0.25,
+        0.25,
+        yaw_deg=180.0,
+        category="road",
+        team=1,
+    ),
+    TerrainPrimitive(
+        "blue_road_link",
+        (5.1, 4.4),
+        (3.0, 1.5),
+        0.25,
+        0.35,
+        yaw_deg=215.0,
+        category="road",
+        team=1,
+    ),
+    TerrainPrimitive(
+        "red_fly_ramp",
+        (-3.2, -6.2),
+        (2.151, 1.145),
+        0.203,
+        0.553,
+        category="fly_ramp",
+        team=0,
+    ),
+    TerrainPrimitive(
+        "blue_fly_ramp",
+        (3.2, 6.2),
+        (2.151, 1.145),
+        0.203,
+        0.553,
+        yaw_deg=180.0,
+        category="fly_ramp",
+        team=1,
+    ),
+    TerrainPrimitive(
+        "red_rough_road",
+        (-10.4, -6.25),
+        (2.0, 1.2),
+        0.04,
+        0.04,
+        category="rough",
+        team=0,
+    ),
+    TerrainPrimitive(
+        "blue_rough_road",
+        (10.4, 6.25),
+        (2.0, 1.2),
+        0.04,
+        0.04,
+        yaw_deg=180.0,
+        category="rough",
+        team=1,
+    ),
+    TerrainPrimitive(
+        "red_fortress",
+        (-3.8, -4.2),
+        (1.12, 1.939),
+        0.15,
+        0.15,
+        category="fortress",
+        team=0,
+    ),
+    TerrainPrimitive(
+        "blue_fortress",
+        (3.8, 4.2),
+        (1.12, 1.939),
+        0.15,
+        0.15,
+        yaw_deg=180.0,
+        category="fortress",
+        team=1,
+    ),
+    TerrainPrimitive(
+        "red_tunnel",
+        (-4.1, -4.65),
+        (1.6, 0.8),
+        0.0,
+        0.0,
+        yaw_deg=35.0,
+        category="tunnel",
+        team=0,
+    ),
+    TerrainPrimitive(
+        "blue_tunnel",
+        (4.1, 4.65),
+        (1.6, 0.8),
+        0.0,
+        0.0,
+        yaw_deg=215.0,
+        category="tunnel",
+        team=1,
+    ),
+)
+
+
+@dataclass(frozen=True)
 class ArenaConfig:
-    """Explicit ``[SIM]`` coordinate and simplified-geometry choices."""
+    """Explicit ``[SIM]`` coordinate and diagram-derived geometry choices."""
 
     field_length_m: float = 28.0
     field_width_m: float = 15.0
-    robot_radius_m: float = 0.35
-    # xmin, xmax, ymin, ymax. These conservative blocks approximate elevated
-    # structures whose exact local collision drawings are not available.
+    field_crown_slope_deg: float = 1.5
+    terrain_resolution_m: float = 0.05
+    robot_radius_m: float = 0.40
+    terrain: tuple[TerrainPrimitive, ...] = DEFAULT_TERRAIN
+    # xmin, xmax, ymin, ymax. Traversable platforms live in ``terrain``;
+    # these boxes represent the central mechanism and retaining walls.
     obstacles: tuple[tuple[float, float, float, float], ...] = (
-        (-2.0, 2.0, -0.8, 0.8),
-        (-8.2, -6.2, 2.2, 4.4),
-        (6.2, 8.2, -4.4, -2.2),
+        (-0.65, 0.65, -0.80, 0.80),
+        (-4.05, -3.72, -2.30, 2.30),
+        (3.72, 4.05, -2.30, 2.30),
+        (-8.15, -7.82, 3.25, 5.85),
+        (7.82, 8.15, -5.85, -3.25),
     )
 
 
@@ -33,6 +260,12 @@ class ArenaGeometry:
 
     def __init__(self, config: ArenaConfig | None = None) -> None:
         self.config = config or ArenaConfig()
+        self._obstacle_cache: dict[tuple[str, torch.dtype], Tensor] = {}
+        self._terrain_cache: dict[
+            tuple[str, torch.dtype],
+            tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor],
+        ] = {}
+        self._height_grid_cache: dict[tuple[str, torch.dtype], Tensor] = {}
 
     def obstacles(
         self,
@@ -40,12 +273,63 @@ class ArenaGeometry:
         device: torch.device,
         dtype: torch.dtype,
     ) -> Tensor:
-        return torch.tensor(self.config.obstacles, device=device, dtype=dtype)
+        key = (str(device), dtype)
+        if key not in self._obstacle_cache:
+            self._obstacle_cache[key] = torch.tensor(
+                self.config.obstacles,
+                device=device,
+                dtype=dtype,
+            )
+        return self._obstacle_cache[key]
+
+    def _terrain_tensors(
+        self,
+        *,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+        key = (str(device), dtype)
+        if key not in self._terrain_cache:
+            centers = torch.tensor(
+                [primitive.center_xy for primitive in self.config.terrain],
+                device=device,
+                dtype=dtype,
+            )
+            sizes = torch.tensor(
+                [primitive.size_xy for primitive in self.config.terrain],
+                device=device,
+                dtype=dtype,
+            )
+            yaw = torch.tensor(
+                [primitive.yaw_deg for primitive in self.config.terrain],
+                device=device,
+                dtype=dtype,
+            )
+            angle = -yaw * torch.pi / 180.0
+            start = torch.tensor(
+                [primitive.elevation_start_m for primitive in self.config.terrain],
+                device=device,
+                dtype=dtype,
+            )
+            end = torch.tensor(
+                [primitive.elevation_end_m for primitive in self.config.terrain],
+                device=device,
+                dtype=dtype,
+            )
+            self._terrain_cache[key] = (
+                centers,
+                sizes,
+                torch.cos(angle),
+                torch.sin(angle),
+                start,
+                end,
+            )
+        return self._terrain_cache[key]
 
     def spawn_positions(self, game: GameState) -> Tensor:
         red = torch.tensor(
             (
-                (-11.0, 0.0),
+                (-10.8, 0.0),
                 (-12.0, -2.0),
                 (-10.0, -3.0),
                 (-10.0, 3.0),
@@ -57,10 +341,133 @@ class ArenaGeometry:
             device=game.device,
             dtype=game.dtype,
         )
-        blue = red.clone()
-        blue[:, 0].neg_()
+        # The manual describes a center-symmetric field, so team placements
+        # rotate by 180 degrees rather than reflecting only the x coordinate.
+        blue = -red
         positions = torch.cat((red, blue), dim=0)
         return positions.unsqueeze(0).expand(game.num_envs, -1, -1).clone()
+
+    def terrain_corners(
+        self,
+        primitive: TerrainPrimitive,
+        *,
+        device: torch.device | str,
+        dtype: torch.dtype,
+    ) -> Tensor:
+        half_x = primitive.size_xy[0] / 2
+        half_y = primitive.size_xy[1] / 2
+        local = torch.tensor(
+            ((-half_x, -half_y), (half_x, -half_y), (half_x, half_y), (-half_x, half_y)),
+            device=device,
+            dtype=dtype,
+        )
+        angle = torch.tensor(
+            primitive.yaw_deg * torch.pi / 180.0,
+            device=device,
+            dtype=dtype,
+        )
+        cosine = torch.cos(angle)
+        sine = torch.sin(angle)
+        rotation = torch.stack(
+            (
+                torch.stack((cosine, -sine)),
+                torch.stack((sine, cosine)),
+            )
+        )
+        center = torch.tensor(primitive.center_xy, device=device, dtype=dtype)
+        return local @ rotation.T + center
+
+    def _terrain_height_analytic(self, position_xy: Tensor) -> Tensor:
+        edge_distance = torch.clamp(
+            self.config.field_width_m / 2 - torch.abs(position_xy[..., 1]),
+            min=0.0,
+        )
+        crown = edge_distance * torch.tan(
+            torch.tensor(
+                self.config.field_crown_slope_deg * torch.pi / 180.0,
+                device=position_xy.device,
+                dtype=position_xy.dtype,
+            )
+        )
+        height = crown
+        if not self.config.terrain:
+            return height
+        centers, sizes, cosine, sine, start, end = self._terrain_tensors(
+            device=position_xy.device,
+            dtype=position_xy.dtype,
+        )
+        for index, primitive in enumerate(self.config.terrain):
+            if primitive.category == "tunnel":
+                continue
+            offset = position_xy - centers[index]
+            local_x = cosine[index] * offset[..., 0] - sine[index] * offset[..., 1]
+            local_y = sine[index] * offset[..., 0] + cosine[index] * offset[..., 1]
+            inside = (torch.abs(local_x) <= sizes[index, 0] / 2) & (
+                torch.abs(local_y) <= sizes[index, 1] / 2
+            )
+            fraction = torch.clamp(
+                local_x / sizes[index, 0] + 0.5,
+                min=0.0,
+                max=1.0,
+            )
+            elevation = start[index] + fraction * (end[index] - start[index])
+            height = torch.where(
+                inside,
+                torch.maximum(height, crown + elevation),
+                height,
+            )
+        return height
+
+    def _terrain_height_grid(
+        self,
+        *,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Tensor:
+        key = (str(device), dtype)
+        if key not in self._height_grid_cache:
+            resolution = self.config.terrain_resolution_m
+            x_count = round(self.config.field_length_m / resolution) + 1
+            y_count = round(self.config.field_width_m / resolution) + 1
+            x = torch.linspace(
+                -self.config.field_length_m / 2,
+                self.config.field_length_m / 2,
+                x_count,
+                device=device,
+                dtype=dtype,
+            )
+            y = torch.linspace(
+                -self.config.field_width_m / 2,
+                self.config.field_width_m / 2,
+                y_count,
+                device=device,
+                dtype=dtype,
+            )
+            yy, xx = torch.meshgrid(y, x, indexing="ij")
+            self._height_grid_cache[key] = self._terrain_height_analytic(
+                torch.stack((xx, yy), dim=-1)
+            )
+        return self._height_grid_cache[key]
+
+    def terrain_height(self, position_xy: Tensor) -> Tensor:
+        """Return the 2.5D surface height from a cached 50mm lookup grid."""
+
+        resolution = self.config.terrain_resolution_m
+        if resolution <= 0:
+            raise ValueError("terrain_resolution_m must be positive")
+        grid = self._terrain_height_grid(
+            device=position_xy.device,
+            dtype=position_xy.dtype,
+        )
+        x_index = torch.round(
+            (position_xy[..., 0] / self.config.field_length_m + 0.5) * (grid.shape[1] - 1)
+        ).to(torch.long)
+        y_index = torch.round(
+            (position_xy[..., 1] / self.config.field_width_m + 0.5) * (grid.shape[0] - 1)
+        ).to(torch.long)
+        x_index.clamp_(min=0, max=grid.shape[1] - 1)
+        y_index.clamp_(min=0, max=grid.shape[0] - 1)
+        return grid[y_index, x_index]
 
     def zone_occupancy(self, position_xy: Tensor) -> Tensor:
         if position_xy.shape[-2:] != (constants.UNIT_COUNT, 2):
@@ -72,18 +479,17 @@ class ArenaGeometry:
             (
                 (-11.5, -5.2),  # supply
                 (-12.3, 0.0),  # base
-                (0.0, 2.2),  # central high
+                (0.0, 0.0),  # central high
                 (-8.0, 4.8),  # trapezoid high
                 (-6.5, 0.0),  # outpost
                 (-3.8, -4.2),  # own fortress
-                (3.8, -4.2),  # enemy fortress
+                (3.8, 4.2),  # enemy fortress
                 (-0.9, -1.8),  # assembly
             ),
             device=device,
             dtype=dtype,
         )
-        blue = red.clone()
-        blue[:, 0].neg_()
+        blue = -red
         blue[Zone.CENTRAL_HIGH] = red[Zone.CENTRAL_HIGH]
         centers = torch.stack((red, blue), dim=0)
         half_extent = torch.tensor(
@@ -118,8 +524,7 @@ class ArenaGeometry:
             device=device,
             dtype=dtype,
         )
-        blue_finish = red_finish.clone()
-        blue_finish[:, 0].neg_()
+        blue_finish = -red_finish
         centers = torch.stack((red_finish, blue_finish), dim=0)
         teams = unit_teams(device)
         delta = torch.abs(position_xy[:, :, None, :] - centers[teams][None, :, :, :])

@@ -6,8 +6,51 @@ import pytest
 import torch
 
 from rm_referee import GameState
-from rm_referee.schema import Role, Team, slot
-from rm_world import KinematicCommands, KinematicState, KinematicWorld
+from rm_referee import constants
+from rm_referee.schema import Role, Team, slot, unit_roles
+from rm_world import (
+    KinematicCommands,
+    KinematicConfig,
+    KinematicState,
+    KinematicWorld,
+    ScriptedOpponent,
+    TorchEnvConfig,
+    TorchRMArena,
+    terrain_demo_targets,
+)
+
+
+def _minimum_ground_clearance(position_xy: torch.Tensor) -> torch.Tensor:
+    roles = unit_roles(position_xy.device)
+    radii = torch.where(
+        roles == Role.BASE,
+        torch.full_like(roles, 0.95, dtype=position_xy.dtype),
+        torch.where(
+            roles == Role.OUTPOST,
+            torch.full_like(roles, 0.40, dtype=position_xy.dtype),
+            torch.full_like(roles, 0.40, dtype=position_xy.dtype),
+        ),
+    )
+    distance = torch.cdist(position_xy, position_xy)
+    clearance = distance - radii[:, None] - radii[None, :]
+    valid = (
+        (roles[:, None] != Role.AERIAL)
+        & (roles[None, :] != Role.AERIAL)
+        & ~torch.eye(constants.UNIT_COUNT, device=position_xy.device, dtype=torch.bool)
+    )
+    return clearance[:, valid].amin(dim=-1)
+
+
+@pytest.mark.parametrize("elapsed_s", [0.0, 6.0, 13.0, 22.0, 100.0])
+def test_visualization_waypoints_remain_center_symmetric(elapsed_s: float) -> None:
+    targets = terrain_demo_targets(
+        elapsed_s,
+        device="cpu",
+        dtype=torch.float32,
+    )
+
+    assert targets.shape == (12, 2)
+    assert torch.allclose(targets[:6], -targets[6:])
 
 
 def test_body_velocity_is_rotated_and_batched() -> None:
@@ -42,3 +85,81 @@ def test_buildings_do_not_move_and_field_bounds_are_enforced() -> None:
 
     assert next_world.position_xy[0, base, 0] == 0
     assert next_world.position_xy[0, hero, 0] == pytest.approx(14)
+
+
+def test_exactly_coincident_ground_units_are_separated() -> None:
+    game = GameState.create(1)
+    world = KinematicState.spawn(game)
+    red = slot(Team.RED, Role.INFANTRY_3)
+    blue = slot(Team.BLUE, Role.INFANTRY_3)
+    world.position_xy[0, red] = torch.tensor([0.0, 6.5])
+    world.position_xy[0, blue] = torch.tensor([0.0, 6.5])
+
+    next_world = KinematicWorld(
+        KinematicConfig(
+            enable_unit_collisions=True,
+        )
+    ).step(world, game, KinematicCommands.zeros(game))
+
+    separation = torch.linalg.vector_norm(
+        next_world.position_xy[0, red] - next_world.position_xy[0, blue]
+    )
+    assert separation.item() >= 0.80 - 1.0e-4
+
+
+def test_scripted_rollout_keeps_every_ground_footprint_disjoint() -> None:
+    environment = TorchRMArena(
+        TorchEnvConfig(
+            num_envs=1,
+            validate_referee=False,
+            seed=7,
+        )
+    )
+    policy = ScriptedOpponent()
+    minimum_clearance = torch.tensor(torch.inf)
+    minimum_static_clearance = torch.tensor(torch.inf)
+    roles = unit_roles(environment.game.device)
+    moving_ground = (roles != Role.AERIAL) & (roles != Role.BASE) & (roles != Role.OUTPOST)
+
+    for _ in range(60):
+        environment.step(policy.act(environment.game, environment.world))
+        minimum_clearance = torch.minimum(
+            minimum_clearance,
+            _minimum_ground_clearance(environment.world.position_xy),
+        )
+        minimum_static_clearance = torch.minimum(
+            minimum_static_clearance,
+            environment.arena.signed_distance(environment.world.position_xy)[
+                :, moving_ground
+            ].amin()
+            - environment.world_model.config.robot_radius_m,
+        )
+
+    assert minimum_clearance.item() >= -1.0e-4
+    assert minimum_static_clearance.item() >= -1.0e-4
+
+
+def test_random_batched_motion_preserves_contact_constraints() -> None:
+    game = GameState.create(32)
+    model = KinematicWorld(
+        KinematicConfig(
+            boundary_margin_m=0.40,
+            enable_static_collisions=True,
+            enable_unit_collisions=True,
+        )
+    )
+    world = KinematicState.spawn(game, model.arena)
+    generator = torch.Generator().manual_seed(23)
+    minimum_clearance = torch.tensor(torch.inf)
+
+    for _ in range(80):
+        commands = KinematicCommands.zeros(game)
+        commands.body_velocity_xy.uniform_(-3.0, 3.0, generator=generator)
+        commands.yaw_rate.uniform_(-math.pi, math.pi, generator=generator)
+        world = model.step(world, game, commands)
+        minimum_clearance = torch.minimum(
+            minimum_clearance,
+            _minimum_ground_clearance(world.position_xy).amin(),
+        )
+
+    assert minimum_clearance.item() >= -1.0e-4

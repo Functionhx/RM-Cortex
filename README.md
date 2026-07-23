@@ -66,14 +66,14 @@ python -m pip install -e ".[visualization]"
 python scripts/visualize_torch.py --steps 300 --fps 10
 ```
 
-The ignored output `outputs/torch_demo.gif` shows unit roles, headings, trails, health, fire lines, and team resources. To open the interactive 3D scene from a graphical desktop:
+The ignored output `outputs/torch_demo.gif` shows unit roles, headings, trails, health, fire lines, team resources, and diagram-derived terrain: the field crown, highlands, roads, ramps, tunnels, rough sections, and fortresses. The exporter verifies that ground-unit footprints never overlap. To open the interactive 3D scene from a graphical desktop:
 
 ```bash
 PYTHONPATH=src /path/to/IsaacLab/isaaclab.sh \
   -p scripts/visualize_isaac.py --num-envs 1
 ```
 
-The Isaac scene uses lightweight visual markers synchronized from the authoritative Torch world; it does not introduce a second gameplay state.
+Add `--device cpu` when CUDA simulation is unavailable or GPU memory is occupied. The Isaac scene builds the same terrain primitives and synchronizes lightweight unit markers from the authoritative Torch world; it does not introduce a second gameplay state. Terrain placement is an explicit Phase 1 `[SIM]` approximation, not official CAD.
 
 ## Design principles
 

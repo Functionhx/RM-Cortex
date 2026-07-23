@@ -23,6 +23,7 @@ def main() -> None:
 
         cfg = RMCortexDirectMARLEnvCfg()
         cfg.scene.num_envs = args.num_envs
+        cfg.sim.device = args.device
         env = RMCortexDirectMARLEnv(cfg)
         actions = {
             agent: torch.zeros(

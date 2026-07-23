@@ -63,14 +63,14 @@ python -m pip install -e ".[visualization]"
 python scripts/visualize_torch.py --steps 300 --fps 10
 ```
 
-生成但不纳入版本控制的 `outputs/torch_demo.gif` 会显示角色、朝向、轨迹、血条、射击线与队伍资源。在带图形桌面的终端中可启动交互式 3D 场景：
+生成但不纳入版本控制的 `outputs/torch_demo.gif` 会显示角色、朝向、轨迹、血条、射击线、队伍资源，以及依据图纸构建的整体横坡、高地、公路、坡道、隧道、起伏路与堡垒。导出器还会验证地面单位的碰撞外廓全程不重叠。在带图形桌面的终端中可启动交互式 3D 场景：
 
 ```bash
 PYTHONPATH=src /path/to/IsaacLab/isaaclab.sh \
   -p scripts/visualize_isaac.py --num-envs 1
 ```
 
-Isaac 场景使用由权威 Torch World 同步的轻量可视标记，不会引入第二套比赛状态。
+CUDA 仿真不可用或显存被占用时可追加 `--device cpu`。Isaac 场景构建同一组地形 primitive，并使用由权威 Torch World 同步的轻量单位标记，不会引入第二套比赛状态。当前地形位置是明确标记的 Phase 1 `[SIM]` 近似，不是官方 CAD。
 
 ## 设计原则
 

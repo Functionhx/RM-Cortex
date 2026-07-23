@@ -14,6 +14,61 @@ from rm_world.geometry import NO_TARGET, RUNE_TARGET
 from rm_world.kinematics import KinematicState
 
 
+MOBILE_UNIT_SLOTS = (0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 13)
+TERRAIN_DEMO_PHASE_EDGES_S = (6.0, 13.0, 22.0)
+TERRAIN_DEMO_RED_ROUTES = (
+    (
+        (-6.0, -2.9),
+        (-6.0, -4.8),
+        (-5.5, -5.4),
+        (-6.8, 2.8),
+        (-5.0, 1.2),
+        (-6.0, 3.0),
+    ),
+    (
+        (-2.6, -3.4),
+        (-2.7, -5.2),
+        (-1.0, -4.7),
+        (-2.5, 4.8),
+        (0.0, 0.0),
+        (-2.8, 3.2),
+    ),
+    (
+        (2.6, -3.4),
+        (1.5, -3.2),
+        (3.0, -3.0),
+        (2.0, 3.5),
+        (5.0, -1.2),
+        (2.8, 3.2),
+    ),
+    (
+        (6.0, -1.0),
+        (5.0, -1.8),
+        (6.0, -1.5),
+        (6.0, 1.5),
+        (8.0, 0.0),
+        (5.5, 1.0),
+    ),
+)
+
+
+def terrain_demo_targets(
+    elapsed_s: float,
+    *,
+    device: torch.device | str,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """Return center-symmetric waypoints for the visualization demos."""
+
+    phase = sum(elapsed_s >= edge for edge in TERRAIN_DEMO_PHASE_EDGES_S)
+    red = torch.tensor(
+        TERRAIN_DEMO_RED_ROUTES[phase],
+        device=device,
+        dtype=dtype,
+    )
+    return torch.cat((red, -red), dim=0)
+
+
 class ScriptedOpponent:
     """A small objective-first policy, intentionally free of hidden state."""
 

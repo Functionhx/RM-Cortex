@@ -25,10 +25,12 @@ class KinematicConfig:
     max_yaw_rate_rad_s: float = 2.0 * math.pi
     aerial_min_z_m: float = 0.0
     aerial_max_z_m: float = 5.0
-    robot_radius_m: float = 0.35
+    robot_radius_m: float = 0.40
     boundary_margin_m: float = 0.0
     enable_static_collisions: bool = False
     enable_unit_collisions: bool = False
+    collision_iterations: int = 2
+    collision_clearance_m: float = 0.05
 
 
 @dataclass
@@ -81,8 +83,16 @@ class KinematicState:
         arena = arena or ArenaGeometry()
         state = cls.zeros(game)
         state.position_xy.copy_(arena.spawn_positions(game))
+        roles = unit_roles(game.device)
         blue = torch.arange(constants.UNIT_COUNT, device=game.device) >= constants.ROLES_PER_TEAM
         state.yaw[:, blue] = math.pi
+        state.position_z.copy_(
+            torch.where(
+                roles[None, :] == Role.AERIAL,
+                torch.zeros_like(state.position_z),
+                arena.terrain_height(state.position_xy),
+            )
+        )
         state.terrain_contact.copy_(arena.terrain_contacts(state.position_xy))
         return state
 
@@ -126,6 +136,10 @@ class KinematicWorld:
         arena: ArenaGeometry | None = None,
     ) -> None:
         self.config = config or KinematicConfig()
+        if self.config.collision_iterations <= 0:
+            raise ValueError("collision_iterations must be positive")
+        if self.config.collision_clearance_m < 0:
+            raise ValueError("collision_clearance_m must be non-negative")
         self.arena = arena or ArenaGeometry(
             ArenaConfig(
                 field_length_m=self.config.field_length_m,
@@ -140,6 +154,13 @@ class KinematicWorld:
         game: GameState,
         movable: Tensor,
     ) -> Tensor:
+        """Project ground-unit circles apart with fixed-iteration PBD.
+
+        The fallback normals handle exact coincident centers deterministically.
+        Destroyed robots and structures remain physical, but only movable units
+        receive corrections.
+        """
+
         roles = unit_roles(game.device)
         radius = torch.where(
             roles == Role.BASE,
@@ -165,28 +186,68 @@ class KinematicWorld:
                 ),
             ),
         )
-        collidable = game.alive & (roles[None, :] != Role.AERIAL)
-        delta = position_xy[:, :, None, :] - position_xy[:, None, :, :]
-        distance = torch.linalg.vector_norm(delta, dim=-1)
+        collidable = roles[None, :] != Role.AERIAL
         pair_radius = radius[None, :, None] + radius[None, None, :]
         identity = torch.eye(
             constants.UNIT_COUNT,
             device=game.device,
             dtype=torch.bool,
         )[None, :, :]
-        overlap = torch.clamp(pair_radius - distance, min=0)
-        pair_active = collidable[:, :, None] & collidable[:, None, :] & ~identity & (overlap > 0)
-        direction = delta / torch.clamp(distance[..., None], min=1.0e-6)
+        indices = torch.arange(constants.UNIT_COUNT, device=game.device)
+        index_i = indices[:, None]
+        index_j = indices[None, :]
+        lower = torch.minimum(index_i, index_j)
+        upper = torch.maximum(index_i, index_j)
+        fallback_angle = (lower * constants.UNIT_COUNT + upper).to(game.dtype) * 2.39996323
+        fallback_direction = torch.stack(
+            (torch.cos(fallback_angle), torch.sin(fallback_angle)),
+            dim=-1,
+        )
+        antisymmetric_sign = torch.where(
+            index_i < index_j,
+            torch.ones_like(fallback_angle),
+            -torch.ones_like(fallback_angle),
+        )
+        fallback_direction *= antisymmetric_sign[..., None]
         movable_i = movable[:, :, None].to(game.dtype)
         movable_j = movable[:, None, :].to(game.dtype)
         share = movable_i / torch.clamp(movable_i + movable_j, min=1.0)
-        displacement = (
-            direction
-            * overlap[..., None]
-            * pair_active[..., None].to(game.dtype)
-            * share[..., None]
-        ).sum(dim=2)
-        return position_xy + displacement
+        resolved = position_xy
+        for _ in range(self.config.collision_iterations):
+            delta = resolved[:, :, None, :] - resolved[:, None, :, :]
+            distance = torch.linalg.vector_norm(delta, dim=-1)
+            overlap = torch.clamp(
+                pair_radius + self.config.collision_clearance_m - distance,
+                min=0,
+            )
+            pair_active = (
+                collidable[:, :, None] & collidable[:, None, :] & ~identity & (overlap > 0)
+            )
+            direction = torch.where(
+                (distance > 1.0e-6)[..., None],
+                delta / torch.clamp(distance[..., None], min=1.0e-6),
+                fallback_direction[None, ...],
+            )
+            displacement = (
+                direction
+                * overlap[..., None]
+                * pair_active[..., None].to(game.dtype)
+                * share[..., None]
+            ).sum(dim=2)
+            resolved = torch.where(
+                movable[..., None],
+                resolved + displacement,
+                resolved,
+            )
+            resolved[..., 0].clamp_(
+                min=-self.config.field_length_m / 2 + self.config.boundary_margin_m,
+                max=self.config.field_length_m / 2 - self.config.boundary_margin_m,
+            )
+            resolved[..., 1].clamp_(
+                min=-self.config.field_width_m / 2 + self.config.boundary_margin_m,
+                max=self.config.field_width_m / 2 - self.config.boundary_margin_m,
+            )
+        return resolved
 
     def step(
         self,
@@ -271,8 +332,29 @@ class KinematicWorld:
             )
         if self.config.enable_unit_collisions:
             candidate_xy = self._resolve_unit_collisions(candidate_xy, game, movable)
+        if self.config.enable_static_collisions:
+            projected = self.arena.project_out_of_obstacles(
+                candidate_xy,
+                self.config.robot_radius_m,
+            )
+            ground_movable = movable & ~aerial[None, :]
+            candidate_xy = torch.where(
+                ground_movable[:, :, None],
+                projected,
+                candidate_xy,
+            )
+        if self.config.enable_unit_collisions or self.config.enable_static_collisions:
+            candidate_xy[..., 0].clamp_(
+                min=-self.config.field_length_m / 2 + self.config.boundary_margin_m,
+                max=self.config.field_length_m / 2 - self.config.boundary_margin_m,
+            )
+            candidate_xy[..., 1].clamp_(
+                min=-self.config.field_width_m / 2 + self.config.boundary_margin_m,
+                max=self.config.field_width_m / 2 - self.config.boundary_margin_m,
+            )
         result.position_xy.copy_(torch.where(movable[:, :, None], candidate_xy, world.position_xy))
 
+        ground_height = self.arena.terrain_height(result.position_xy)
         result.position_z.copy_(
             torch.where(
                 aerial[None, :],
@@ -281,7 +363,7 @@ class KinematicWorld:
                     min=self.config.aerial_min_z_m,
                     max=self.config.aerial_max_z_m,
                 ),
-                torch.zeros_like(world.position_z),
+                ground_height,
             )
         )
         raw_yaw = result.yaw + yaw_rate * dt

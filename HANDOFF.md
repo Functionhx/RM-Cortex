@@ -29,6 +29,8 @@
 | 基地护甲展开自带减伤 | 只改变可攻击几何 |
 | 空中是普通受击单位 | 不受普通伤害/撞击，不回血、不复活 |
 | 雷达直接固定增加 `P` | 先更新连续量 `x`，再执行 `P += x` |
+| 堡垒高 50mm | 图 4-25 标注高度为 150mm |
+| 红蓝场地模块只沿 `x` 镜像 | 战场为中心对称；成对模块与出生点按 180° 旋转 |
 
 ## 已冻结与仍需保留的歧义
 
@@ -41,15 +43,16 @@
 `rm-sim/` 已形成完整的纯 Torch 闭环：
 
 - M1：16 槽批量裁判状态，覆盖战斗、热量/功率、经济、升级/科技、复活、角色机制、区域增益、能量机关、飞镖、雷达与终局。
-- M2：28×15m 解析场地、2.5D 运动学、碰撞/区域、LOS、装甲交点、可配置命中模型、部分可观测观测与脚本对手。
-- M3：可选 `DirectMARLEnv` 场景、Torch 运动学驱动的可视标记同步、统一 `RuleInputs` 归一化与无 Isaac 导入安全边界。
+- M2：28×15m 解析场地、50mm 地形高度图、整体 1°–2° 横坡、高地/公路/飞坡/隧道 primitive、带安全间距的迭代接触约束、区域、LOS、装甲交点、可配置命中模型、部分可观测观测与脚本对手。
+- M3：可选 `DirectMARLEnv` 场景、共用地形 primitive、Torch 运动学驱动的可视标记同步、统一 `RuleInputs` 归一化与无 Isaac 导入安全边界。
 - M4：参数共享 actor、角色/队伍 embedding、集中式 critic、异构动作头与 mask、GAE、clipped MAPPO、checkpoint 和脚本对手评估。
 
-完整测试为 54 项；`ruff`、`mypy`、`compileall`、命令行训练/评估冒烟和原生 Isaac Lab 无头场景冒烟均通过。在 RTX 4070 Ti SUPER 上，4096 环境的裁判基准约为 13.57ms/tick，完整 Torch World 约为 47.32ms/policy-step（5Hz policy step，10 次测量）。
+完整测试为 64 项；`ruff`、`mypy`、`compileall`、命令行训练/评估冒烟和原生 Isaac Lab 无头场景冒烟均通过。接触回归覆盖同点分离、随机批量运动、静态障碍和完整脚本对局。在 RTX 4070 Ti SUPER 上，4096 环境的裁判基准约为 13.57ms/tick；启用地形与严格接触约束的完整 Torch World 约为 56.65ms/policy-step（约 72k env-steps/s，5Hz policy step，10 次测量）。
 
 ## 尚未完成的验证
 
 - API 执行会话没有 `DISPLAY`，因此交互式 Isaac 视口尚未人工检查；`scripts/visualize_isaac.py` 已可在带图形桌面的 Isaac Lab launcher 中运行。
+- 官方未提供可直接使用的 CAD/USD；当前模块位置依据图 4-5 推定并标记为 `[SIM]`，后续应以官方资产或实测场地标定替换。
 - MAPPO 已完成真实梯度更新与 checkpoint/evaluate 冒烟，但尚未执行默认 200-update 实验，因此没有可发布的胜率曲线。
 - M5 回放/数据校准不属于 Phase 1，仍待实现；官方未规定的命中、雷达漂移等参数继续标记为 `[SIM]`。
 

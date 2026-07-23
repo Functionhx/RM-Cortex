@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import torch
 
 from rm_referee import GameState, RandomTape, Referee
@@ -12,6 +13,36 @@ from rm_world import (
     TorchRuleBackend,
     WorldActions,
 )
+
+
+def test_terrain_height_models_field_crown_highland_and_fly_ramp() -> None:
+    arena = ArenaGeometry()
+    samples = torch.tensor(
+        (
+            (13.0, 7.5),
+            (13.0, 0.0),
+            (0.0, 0.0),
+            (-4.20, -6.2),
+            (-2.20, -6.2),
+        )
+    )
+
+    height = arena.terrain_height(samples)
+
+    assert height[0] == pytest.approx(0.0, abs=1.0e-6)
+    assert height[1] > height[0]
+    assert height[2] > height[1]
+    assert height[4] - height[3] == pytest.approx(0.325, abs=0.01)
+
+
+def test_team_spawns_are_center_symmetric() -> None:
+    game = GameState.create(1)
+    positions = ArenaGeometry().spawn_positions(game)[0]
+
+    assert torch.allclose(
+        positions[:8],
+        -positions[8:],
+    )
 
 
 def test_static_aabb_blocks_los_and_signed_distance_marks_occupancy() -> None:
