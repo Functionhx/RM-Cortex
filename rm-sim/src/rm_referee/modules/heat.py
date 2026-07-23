@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 
 from rm_referee import constants
-from rm_referee.schema import HeatLock
+from rm_referee.schema import HeatLock, Role, Team, slot
 from rm_referee.state import GameState
 
 
@@ -47,3 +47,9 @@ def apply_heat(state: GameState, dt: float) -> None:
         )
     )
     state.video_disabled.copy_((state.heat_lock != HeatLock.NONE).any(dim=-1))
+    hero_slots = torch.tensor(
+        [slot(Team.RED, Role.HERO), slot(Team.BLUE, Role.HERO)],
+        device=state.device,
+    )
+    state.video_disabled[:, hero_slots] |= state.hero_deployed
+    state.video_disabled |= state.controller_offline

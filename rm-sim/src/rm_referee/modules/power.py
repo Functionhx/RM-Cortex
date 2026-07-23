@@ -6,7 +6,7 @@ import torch
 
 from rm_referee import constants
 from rm_referee.inputs import RuleInputs
-from rm_referee.schema import chassis_energy_mask, chassis_power_mask
+from rm_referee.schema import Role, Team, chassis_energy_mask, chassis_power_mask, slot
 from rm_referee.state import GameState
 
 
@@ -22,9 +22,15 @@ def apply_power(state: GameState, inputs: RuleInputs, dt: float) -> None:
         torch.clamp(state.chassis_disabled_s - dt * active[:, None], min=0)
     )
 
+    hero_slots = torch.tensor(
+        [slot(Team.RED, Role.HERO), slot(Team.BLUE, Role.HERO)],
+        device=state.device,
+    )
+    role_chassis_off = state.controller_offline.clone()
+    role_chassis_off[:, hero_slots] |= state.hero_deployed
     measured = torch.clamp(inputs.chassis_power_w, min=0)
     measured = torch.where(
-        active[:, None] & power_applicable & ~previously_disabled,
+        active[:, None] & power_applicable & ~previously_disabled & ~role_chassis_off,
         measured,
         torch.zeros_like(measured),
     )
@@ -46,7 +52,7 @@ def apply_power(state: GameState, inputs: RuleInputs, dt: float) -> None:
     )
 
     raw_buffer = state.power_buffer_j - (measured - effective_limit) * dt
-    can_settle = active[:, None] & power_applicable & ~previously_disabled
+    can_settle = active[:, None] & power_applicable & ~previously_disabled & ~role_chassis_off
     trigger = can_settle & (raw_buffer <= 0)
     state.power_buffer_j.copy_(
         torch.where(
@@ -64,11 +70,17 @@ def apply_power(state: GameState, inputs: RuleInputs, dt: float) -> None:
     )
 
     energy_used = measured * dt
+    wireless_delta = torch.clamp(inputs.supercap_input_w - measured, min=0) * dt
+    energy_charged = (
+        wireless_delta
+        * constants.CHASSIS_WIRELESS_CHARGE_MULTIPLIER
+        * inputs.in_supply_zone.to(state.dtype)
+    )
     state.chassis_energy.copy_(
         torch.where(
             energy_applicable,
             torch.clamp(
-                state.chassis_energy - energy_used,
+                state.chassis_energy - energy_used + energy_charged,
                 min=0,
                 max=constants.CHASSIS_ENERGY_MAX,
             ),

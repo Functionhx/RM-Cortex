@@ -1,7 +1,7 @@
 # HANDOFF — RM-Cortex
 
 - 更新日期：2026-07-23
-- 当前阶段：官方 V1.5.0 规则审计与 Phase 1 设计已完成；M1 裁判纵切和 M2/M3 后端边界已开始实现
+- 当前阶段：Phase 1 的 M1、M2、M4 已实现；M3 已完成代码与契约验证，等待原生 Isaac Lab 运行时冒烟
 - 项目目标：建立可验证的 RMUC 裁判、批量仿真、多智能体训练与后续 sim2real 链路
 
 ## 本地开发资料
@@ -36,10 +36,21 @@
 - 官方图未定义场地坐标原点/轴向，也未给出起伏路凸起高度。
 - 手册没有给出常规命中、小陀螺收益、雷达漂移或不完整飞镖识别的概率函数。
 
-## 下一步
+## 当前实现
 
-`rm-sim/` 已包含可编辑安装包、纯 Torch `GameState`/`RuleInputs`/`Referee`、战斗/热量/功率/经济/复活/雷达/胜负模块、轻量运动学和 Isaac 归一化桥。当前 27 项规则与契约测试通过；4096 环境 GPU 空载裁判基准约为 4.63ms/tick。
+`rm-sim/` 已形成完整的纯 Torch 闭环：
 
-下一步继续 M1：实现升级表应用、底盘充能、立即复活/远程回血、英雄部署、工程防御、哨兵姿态、能量机关、飞镖、前哨站旋转/重建和雷达完整计时。随后让 Torch World 生成真实 LOS/装甲相交事件，再建立实际 `DirectMARLEnv` 场景的逐 tick 契约测试。
+- M1：16 槽批量裁判状态，覆盖战斗、热量/功率、经济、升级/科技、复活、角色机制、区域增益、能量机关、飞镖、雷达与终局。
+- M2：28×15m 解析场地、2.5D 运动学、碰撞/区域、LOS、装甲交点、可配置命中模型、部分可观测观测与脚本对手。
+- M3：可选 `DirectMARLEnv` 场景、kinematic root-pose 同步、统一 `RuleInputs` 归一化与无 Isaac 导入安全边界。
+- M4：参数共享 actor、角色/队伍 embedding、集中式 critic、异构动作头与 mask、GAE、clipped MAPPO、checkpoint 和脚本对手评估。
+
+完整测试为 54 项；`ruff`、`mypy`、`compileall` 和命令行训练/评估冒烟均通过。在 RTX 4070 Ti SUPER 上，4096 环境的裁判基准约为 13.57ms/tick，完整 Torch World 约为 47.32ms/policy-step（5Hz policy step，10 次测量）。
+
+## 尚未完成的验证
+
+- 本机 Python 环境未安装 Isaac Lab；`scripts/isaac_smoke.py` 尚需在原生 Isaac Lab launcher 中运行并检查可视化。
+- MAPPO 已完成真实梯度更新与 checkpoint/evaluate 冒烟，但尚未执行默认 200-update 实验，因此没有可发布的胜率曲线。
+- M5 回放/数据校准不属于 Phase 1，仍待实现；官方未规定的命中、雷达漂移等参数继续标记为 `[SIM]`。
 
 `RMUC-OfflineRL/` 是本地参考仓库，不导入、不修改、不提交。PDF、数据集、Isaac 运行时、训练日志与 checkpoint 均已由顶层 `.gitignore` 排除。

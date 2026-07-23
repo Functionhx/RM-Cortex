@@ -31,13 +31,21 @@ class IsaacGeometryFrame:
 class IsaacRuleAdapter:
     """Normalize scene facts; damage and other rules remain in ``rm_referee``."""
 
-    def normalize(self, game: GameState, frame: IsaacGeometryFrame) -> RuleInputs:
-        inputs = RuleInputs.empty(game)
+    def normalize(
+        self,
+        game: GameState,
+        frame: IsaacGeometryFrame,
+        *,
+        base: RuleInputs | None = None,
+    ) -> RuleInputs:
+        """Merge Isaac geometry into a complete normalized referee frame."""
+
+        inputs = RuleInputs.empty(game) if base is None else base.clone()
         inputs.shots_fired.copy_(frame.shots_fired)
         inputs.hits = HitCandidates(
-            source=frame.hit_source,
-            time_offset_s=frame.hit_time_offset_s,
-            critical=frame.hit_critical,
+            source=frame.hit_source.clone(),
+            time_offset_s=frame.hit_time_offset_s.clone(),
+            critical=frame.hit_critical.clone(),
         )
         inputs.chassis_power_w.copy_(frame.chassis_power_w)
         return inputs

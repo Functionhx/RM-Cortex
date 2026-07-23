@@ -8,10 +8,18 @@ from torch import Tensor
 from rm_referee import constants
 from rm_referee.events import RefereeEvents
 from rm_referee.inputs import RuleInputs
-from rm_referee.schema import HeatLock, Role, Team, Weapon, slot, unit_roles, unit_teams
+from rm_referee.schema import (
+    HeatLock,
+    Role,
+    Team,
+    Weapon,
+    slot,
+    unit_roles,
+    unit_teams,
+    weapon_capability,
+)
 from rm_referee.state import GameState
 from rm_referee.tensor_ops import gather_unit, round_half_up
-from rm_referee.schema import weapon_capability
 
 
 def _raw_damage(
@@ -81,19 +89,37 @@ def apply_combat(
 
     active = ~state.done
     capability = weapon_capability(state.device).unsqueeze(0)
+    roles_for_fire = unit_roles(state.device)
+    teams_for_fire = unit_teams(state.device)
+    aerial_ready = (
+        state.aerial_support_active[:, teams_for_fire]
+        & ~state.aerial_on_pad[:, teams_for_fire]
+        & (state.aerial_counter_lock_s[:, teams_for_fire] <= 0)
+    )
+    role_ready = (roles_for_fire != Role.AERIAL)[None, :] | aerial_ready
     can_fire = (
         active[:, None, None]
         & state.alive[:, :, None]
         & ~state.weak[:, :, None]
+        & ~state.controller_offline[:, :, None]
         & capability
         & (state.heat_lock == HeatLock.NONE)
+        & (state.velocity_lock_s <= 0)
+        & ~state.velocity_permanent_lock
+        & ~state.speed_module_offline
+        & role_ready[:, :, None]
     )
     shots = torch.where(can_fire, inputs.shots_fired, torch.zeros_like(inputs.shots_fired))
     events.shots_fired.copy_(shots)
 
     ammo_before = state.ammo.clone()
-    events.overfire.copy_(torch.clamp(shots - ammo_before, min=0))
-    state.ammo.copy_(torch.clamp(ammo_before - shots, min=0))
+    reserve_before = torch.zeros_like(ammo_before)
+    reserve_before[:, :, Weapon.MM17] = state.fortress_reserve_ammo
+    reserve_used = torch.minimum(shots, reserve_before)
+    own_ammo_shots = shots - reserve_used
+    events.overfire.copy_(torch.clamp(own_ammo_shots - ammo_before, min=0))
+    state.ammo.copy_(torch.clamp(ammo_before - own_ammo_shots, min=0))
+    state.fortress_reserve_ammo.sub_(reserve_used[:, :, Weapon.MM17]).clamp_(min=0)
 
     heat_per_shot = torch.tensor(
         constants.HEAT_PER_SHOT,
@@ -170,8 +196,6 @@ def apply_combat(
         constants.WEAPON_COUNT,
     )
 
-    alive_before = state.alive.clone()
-
     for candidate in range(constants.MAX_HIT_CANDIDATES):
         source = inputs.hits.source[..., candidate]
         source_safe = torch.clamp(source, min=0)
@@ -196,6 +220,7 @@ def apply_combat(
         target_eligible = (
             active[:, None, None, None]
             & state.alive[:, :, None, None]
+            & ~state.controller_offline[:, :, None, None]
             & (state.invulnerable_s[:, :, None, None] <= 0)
             & armor_valid
             & ~base_protected
@@ -203,8 +228,18 @@ def apply_combat(
         invalid_42 = (weapon_grid == Weapon.MM42) & state.hero_42_invalid_block[
             env_index, source_team
         ]
+        invalid_42 |= (weapon_grid == Weapon.MM42) & (
+            state.hero_42_silence_s[env_index, source_team] >= 4.0
+        )
+        opposing_team = source_team != target_team[:, :, None, None]
         accepted = (
-            valid & source_fired & source_alive & refractory_ok & target_eligible & ~invalid_42
+            valid
+            & source_fired
+            & source_alive
+            & refractory_ok
+            & target_eligible
+            & opposing_team
+            & ~invalid_42
         )
         events.hit_accepted[..., candidate].copy_(accepted)
         state.armor_last_hit_s.copy_(torch.where(accepted, event_time, state.armor_last_hit_s))
@@ -216,11 +251,27 @@ def apply_combat(
             torch.ones_like(source_attack),
         )
         attack_multiplier = torch.maximum(source_attack, critical_multiplier)
+        source_is_hero = unit_roles(state.device)[source_safe] == Role.HERO
+        target_is_base = target_role == Role.BASE
+        source_deployed = state.hero_deployed[env_index, source_team]
+        deploy_attack = source_is_hero & source_deployed & target_is_base
+        attack_multiplier = torch.where(
+            deploy_attack,
+            torch.maximum(
+                attack_multiplier,
+                torch.full_like(
+                    attack_multiplier,
+                    constants.HERO_DEPLOY_BASE_ATTACK_MULTIPLIER,
+                ),
+            ),
+            attack_multiplier,
+        )
+        vulnerability = torch.maximum(
+            state.vulnerability_fraction[:, :, None, None],
+            state.radar_vulnerability_fraction[:, :, None, None],
+        )
         defense_factor = torch.clamp(
-            1.0
-            - state.defense_fraction[:, :, None, None]
-            + state.vulnerability_fraction[:, :, None, None]
-            + state.radar_vulnerability_fraction[:, :, None, None],
+            1.0 - state.defense_fraction[:, :, None, None] + vulnerability,
             min=0.0,
         )
         event_damage = round_half_up(raw_damage * attack_multiplier * defense_factor)
@@ -239,6 +290,7 @@ def apply_combat(
 
         state.hp.sub_(hp_damage).clamp_(min=0)
         state.base_shield.sub_(shield_absorbed[:, base_slots]).clamp_(min=0)
+        state.base_hp_lost.add_(hp_damage[:, base_slots])
         events.damage_taken.add_(effective_damage)
 
         scale = torch.where(
@@ -247,6 +299,33 @@ def apply_combat(
             torch.zeros_like(target_damage),
         )
         attributed = event_damage * scale[:, :, None, None]
+        pair_index = source_safe * constants.UNIT_COUNT + torch.arange(
+            constants.UNIT_COUNT, device=state.device
+        ).view(1, -1, 1, 1)
+        pair_damage = torch.zeros(
+            (num_envs, constants.UNIT_COUNT * constants.UNIT_COUNT),
+            device=state.device,
+            dtype=state.dtype,
+        )
+        pair_damage.scatter_add_(
+            1,
+            pair_index.reshape(num_envs, -1),
+            attributed.reshape(num_envs, -1),
+        )
+        events.damage_by_source_target.add_(
+            pair_damage.reshape(
+                num_envs,
+                constants.UNIT_COUNT,
+                constants.UNIT_COUNT,
+            )
+        )
+        events.damage_dealt.add_(
+            pair_damage.reshape(
+                num_envs,
+                constants.UNIT_COUNT,
+                constants.UNIT_COUNT,
+            ).sum(dim=2)
+        )
         team_add = torch.zeros(
             (num_envs, constants.TEAM_COUNT),
             device=state.device,
@@ -258,7 +337,3 @@ def apply_combat(
             attributed.reshape(num_envs, -1),
         )
         state.team_damage.add_(team_add)
-
-    deaths = alive_before & (state.hp <= 0)
-    state.alive &= ~deaths
-    events.deaths.copy_(deaths)

@@ -50,6 +50,66 @@ class PurchaseKind(IntEnum):
     REMOTE = 2
 
 
+class HeroProfile(IntEnum):
+    REMOTE = 0
+    CLOSE = 1
+
+
+class InfantryChassisProfile(IntEnum):
+    HP = 0
+    POWER = 1
+
+
+class InfantryLauncherProfile(IntEnum):
+    COOLING = 0
+    BURST = 1
+
+
+class SentryStance(IntEnum):
+    OFFENSIVE = 0
+    DEFENSIVE = 1
+    MOBILE = 2
+
+
+class Zone(IntEnum):
+    SUPPLY = 0
+    BASE = 1
+    CENTRAL_HIGH = 2
+    TRAPEZOID_HIGH = 3
+    OUTPOST = 4
+    OWN_FORTRESS = 5
+    ENEMY_FORTRESS = 6
+    ASSEMBLY = 7
+
+
+class Terrain(IntEnum):
+    ROAD = 0
+    HIGH = 1
+    FLY_RAMP = 2
+    TUNNEL = 3
+
+
+class RuneMode(IntEnum):
+    IDLE = 0
+    SMALL = 1
+    LARGE = 2
+
+
+class DartTarget(IntEnum):
+    OUTPOST = 0
+    BASE_FIXED = 1
+    BASE_RANDOM_FIXED = 2
+    BASE_RANDOM_MOVING = 3
+    BASE_TERMINAL_MOVING = 4
+
+
+class DartGateState(IntEnum):
+    CLOSED = 0
+    OPENING = 1
+    OPEN = 2
+    COOLDOWN = 3
+
+
 class RadarQuality(IntEnum):
     WRONG = -1
     HALF_ACCURATE = 0
