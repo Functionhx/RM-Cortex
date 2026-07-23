@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rm-cortex-sim"
+version = "0.1.0.dev0"
+description = "Rule-grounded RoboMaster referee and simulation core"
+readme = { text = "Pure-Torch referee and simulation packages for RM-Cortex.", content-type = "text/markdown" }
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "RM-Cortex contributors" }]
+dependencies = ["torch"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.9"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra -p no:launch_testing -p no:launch_ros"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

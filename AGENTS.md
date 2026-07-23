@@ -11,6 +11,7 @@ Run these commands from `rm-sim/` after its scaffold exists:
 ```bash
 python -m pip install -e ".[dev]"  # install the package and test tools
 python -m compileall src           # catch syntax and package-layout errors
+ruff check . && ruff format --check .
 pytest -q                          # run all rule, contract, and replay tests
 pytest -q tests/contracts          # verify Torch/Isaac rule parity
 python scripts/benchmark.py --num-envs 1024 4096
@@ -20,7 +21,7 @@ The referee package must import and run on CPU without Isaac or Omniverse.
 
 ## Coding Style & Naming Conventions
 
-Target Python 3.10+, use four-space indentation, PEP 8 layout, and type hints for public APIs. Name modules and functions `snake_case`, classes `PascalCase`, and constants `UPPER_SNAKE_CASE`. Keep rule values in `constants.py` with manual page references; mark unresolved choices `[SIM]` or `[AMB]`. Prefer batched Torch operations over per-environment or per-unit Python loops. No formatter or linter is configured yet, so preserve ordered imports and nearby style.
+Target Python 3.10+, use four-space indentation, Ruff formatting, and type hints for public APIs. Name modules and functions `snake_case`, classes `PascalCase`, and constants `UPPER_SNAKE_CASE`. Keep rule values in `constants.py` with manual page references; mark unresolved choices `[SIM]` or `[AMB]`. Prefer batched Torch operations over per-environment or per-unit Python loops.
 
 ## Testing Guidelines
 
