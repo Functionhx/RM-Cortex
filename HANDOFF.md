@@ -1,7 +1,7 @@
 # HANDOFF — RM-Cortex
 
 - 更新日期：2026-07-23
-- 当前阶段：Phase 1 的 M1、M2、M4 已实现；M3 已完成代码与契约验证，等待原生 Isaac Lab 运行时冒烟
+- 当前阶段：Phase 1 的 M1–M4 已实现；M3 原生 Isaac Lab 无头运行时冒烟已通过
 - 项目目标：建立可验证的 RMUC 裁判、批量仿真、多智能体训练与后续 sim2real 链路
 
 ## 本地开发资料
@@ -42,14 +42,14 @@
 
 - M1：16 槽批量裁判状态，覆盖战斗、热量/功率、经济、升级/科技、复活、角色机制、区域增益、能量机关、飞镖、雷达与终局。
 - M2：28×15m 解析场地、2.5D 运动学、碰撞/区域、LOS、装甲交点、可配置命中模型、部分可观测观测与脚本对手。
-- M3：可选 `DirectMARLEnv` 场景、kinematic root-pose 同步、统一 `RuleInputs` 归一化与无 Isaac 导入安全边界。
+- M3：可选 `DirectMARLEnv` 场景、Torch 运动学驱动的可视标记同步、统一 `RuleInputs` 归一化与无 Isaac 导入安全边界。
 - M4：参数共享 actor、角色/队伍 embedding、集中式 critic、异构动作头与 mask、GAE、clipped MAPPO、checkpoint 和脚本对手评估。
 
-完整测试为 54 项；`ruff`、`mypy`、`compileall` 和命令行训练/评估冒烟均通过。在 RTX 4070 Ti SUPER 上，4096 环境的裁判基准约为 13.57ms/tick，完整 Torch World 约为 47.32ms/policy-step（5Hz policy step，10 次测量）。
+完整测试为 54 项；`ruff`、`mypy`、`compileall`、命令行训练/评估冒烟和原生 Isaac Lab 无头场景冒烟均通过。在 RTX 4070 Ti SUPER 上，4096 环境的裁判基准约为 13.57ms/tick，完整 Torch World 约为 47.32ms/policy-step（5Hz policy step，10 次测量）。
 
 ## 尚未完成的验证
 
-- 本机 Python 环境未安装 Isaac Lab；`scripts/isaac_smoke.py` 尚需在原生 Isaac Lab launcher 中运行并检查可视化。
+- API 执行会话没有 `DISPLAY`，因此交互式 Isaac 视口尚未人工检查；`scripts/visualize_isaac.py` 已可在带图形桌面的 Isaac Lab launcher 中运行。
 - MAPPO 已完成真实梯度更新与 checkpoint/evaluate 冒烟，但尚未执行默认 200-update 实验，因此没有可发布的胜率曲线。
 - M5 回放/数据校准不属于 Phase 1，仍待实现；官方未规定的命中、雷达漂移等参数继续标记为 `[SIM]`。
 

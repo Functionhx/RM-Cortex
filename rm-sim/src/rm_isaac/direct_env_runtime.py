@@ -14,8 +14,15 @@ import math
 import torch
 
 import isaaclab.sim as sim_utils  # type: ignore[import-not-found]
-from isaaclab.assets import RigidObject, RigidObjectCfg  # type: ignore[import-not-found]
-from isaaclab.envs import DirectMARLEnv, DirectMARLEnvCfg  # type: ignore[import-not-found]
+from isaaclab.envs import (  # type: ignore[import-not-found]
+    DirectMARLEnv,
+    DirectMARLEnvCfg,
+    ViewerCfg,
+)
+from isaaclab.markers import (  # type: ignore[import-not-found]
+    VisualizationMarkers,
+    VisualizationMarkersCfg,
+)
 from isaaclab.scene import InteractiveSceneCfg  # type: ignore[import-not-found]
 from isaaclab.sim import SimulationCfg  # type: ignore[import-not-found]
 from isaaclab.sim.spawners.from_files import (  # type: ignore[import-not-found]
@@ -88,30 +95,66 @@ AGENT_OBSERVATION_SLOT = {
     "blue_radar": slot(Team.BLUE, Role.OUTPOST),
 }
 ACTION_DIM = 14
+UNIT_HEIGHTS = (
+    0.40,
+    0.42,
+    0.38,
+    0.38,
+    0.20,
+    0.58,
+    1.18,
+    1.88,
+) * constants.TEAM_COUNT
 
 
-def _unit_cfg(name: str, role: int, team: int) -> RigidObjectCfg:
+def _unit_marker(role: int, team: int) -> object:
     if role == Role.BASE:
         size = (1.88, 1.61, 1.18)
     elif role == Role.OUTPOST:
-        size = (0.75, 0.75, 1.88)
+        color = (0.10, 0.24, 0.58) if team == Team.BLUE else (0.58, 0.10, 0.12)
+        return sim_utils.CylinderCfg(
+            radius=0.375,
+            height=1.88,
+            visual_material=sim_utils.PreviewSurfaceCfg(
+                diffuse_color=color,
+                metallic=0.35,
+            ),
+        )
     elif role == Role.AERIAL:
-        size = (0.55, 0.55, 0.20)
+        color = (0.12, 0.65, 1.0) if team == Team.BLUE else (1.0, 0.24, 0.16)
+        return sim_utils.CylinderCfg(
+            radius=0.32,
+            height=0.20,
+            visual_material=sim_utils.PreviewSurfaceCfg(
+                diffuse_color=color,
+                emissive_color=color,
+            ),
+        )
+    elif role == Role.SENTRY:
+        size = (0.72, 0.62, 0.58)
     else:
         size = (0.60, 0.50, 0.40)
     color = (0.12, 0.25, 0.90) if team == Team.BLUE else (0.90, 0.12, 0.12)
-    return RigidObjectCfg(
-        prim_path=f"/World/envs/env_.*/{name}",
-        spawn=sim_utils.CuboidCfg(
-            size=size,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
-                kinematic_enabled=True,
-                disable_gravity=True,
-            ),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=color),
+    return sim_utils.CuboidCfg(
+        size=size,
+        visual_material=sim_utils.PreviewSurfaceCfg(
+            diffuse_color=color,
+            metallic=0.25,
+            roughness=0.45,
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, size[2] / 2)),
+    )
+
+
+def _unit_marker_cfg() -> VisualizationMarkersCfg:
+    return VisualizationMarkersCfg(
+        prim_path="/Visuals/RMCortexUnits",
+        markers={
+            name: _unit_marker(
+                index % constants.ROLES_PER_TEAM,
+                index // constants.ROLES_PER_TEAM,
+            )
+            for index, name in enumerate(UNIT_NAMES)
+        },
     )
 
 
@@ -119,6 +162,7 @@ def _unit_cfg(name: str, role: int, team: int) -> RigidObjectCfg:
 class RMCortexDirectMARLEnvCfg(DirectMARLEnvCfg):
     """Isaac Lab scene and PettingZoo-style multi-agent spaces."""
 
+    seed: int = 0
     decimation = 12
     episode_length_s = constants.MATCH_DURATION_S
     possible_agents = list(POSSIBLE_AGENTS)
@@ -131,14 +175,13 @@ class RMCortexDirectMARLEnvCfg(DirectMARLEnvCfg):
         env_spacing=32.0,
         replicate_physics=True,
     )
-    unit_cfgs: dict[str, RigidObjectCfg] = {
-        name: _unit_cfg(
-            name,
-            index % constants.ROLES_PER_TEAM,
-            index // constants.ROLES_PER_TEAM,
-        )
-        for index, name in enumerate(UNIT_NAMES)
-    }
+    viewer: ViewerCfg = ViewerCfg(
+        eye=(0.0, -18.0, 22.0),
+        lookat=(0.0, 0.0, 0.0),
+        origin_type="env",
+    )
+    visualize_units: bool = True
+    unit_marker_cfg: VisualizationMarkersCfg = _unit_marker_cfg()
 
 
 class RMCortexDirectMARLEnv(DirectMARLEnv):
@@ -174,22 +217,60 @@ class RMCortexDirectMARLEnv(DirectMARLEnv):
         self._last_events = RefereeEvents.empty(self.game)
         self._physics_substep = 0
         self._generator = torch.Generator(device=self.device)
-        self._generator.manual_seed(cfg.seed)
+        self._generator.manual_seed(0 if cfg.seed is None else cfg.seed)
+        self.unit_markers = (
+            VisualizationMarkers(cfg.unit_marker_cfg) if cfg.visualize_units else None
+        )
         self._sync_scene()
 
     def _setup_scene(self) -> None:
-        self.units: dict[str, RigidObject] = {
-            name: RigidObject(self.cfg.unit_cfgs[name]) for name in UNIT_NAMES
-        }
         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
+        floor_cfg = sim_utils.CuboidCfg(
+            size=(28.0, 15.0, 0.04),
+            visual_material=sim_utils.PreviewSurfaceCfg(
+                diffuse_color=(0.055, 0.075, 0.085),
+                roughness=0.85,
+            ),
+        )
+        floor_cfg.func(
+            "/World/envs/env_0/ArenaFloor",
+            floor_cfg,
+            translation=(0.0, 0.0, 0.0),
+        )
+        stripe_cfg = sim_utils.CuboidCfg(
+            size=(0.06, 15.0, 0.012),
+            visual_material=sim_utils.PreviewSurfaceCfg(
+                diffuse_color=(0.75, 0.78, 0.82),
+            ),
+        )
+        stripe_cfg.func(
+            "/World/envs/env_0/CenterLine",
+            stripe_cfg,
+            translation=(0.0, 0.0, 0.03),
+        )
+        for index, (x_min, x_max, y_min, y_max) in enumerate(ArenaGeometry().config.obstacles):
+            block_cfg = sim_utils.CuboidCfg(
+                size=(x_max - x_min, y_max - y_min, 0.55),
+                visual_material=sim_utils.PreviewSurfaceCfg(
+                    diffuse_color=(0.24, 0.28, 0.31),
+                    metallic=0.15,
+                ),
+            )
+            block_cfg.func(
+                f"/World/envs/env_0/Obstacle_{index}",
+                block_cfg,
+                translation=(
+                    (x_min + x_max) / 2,
+                    (y_min + y_max) / 2,
+                    0.275,
+                ),
+            )
         self.scene.clone_environments(copy_from_source=False)
         if self.device == "cpu":
             self.scene.filter_collisions(global_prim_paths=[])
-        for name, unit in self.units.items():
-            self.scene.rigid_objects[name] = unit
         light_cfg = sim_utils.DomeLightCfg(
-            intensity=2000.0,
-            color=(0.75, 0.75, 0.75),
+            intensity=2600.0,
+            color=(0.82, 0.86, 0.92),
         )
         light_cfg.func("/World/Light", light_cfg)
 
@@ -329,27 +410,44 @@ class RMCortexDirectMARLEnv(DirectMARLEnv):
         self._reward_buffer.add_(self.reward_builder.build(self.game, self._last_events))
 
     def _sync_scene(self, env_ids: torch.Tensor | None = None) -> None:
-        if env_ids is None:
-            env_ids = torch.arange(self.num_envs, device=self.device)
+        del env_ids
+        if self.unit_markers is None:
+            return
         half_height = torch.tensor(
-            [self.cfg.unit_cfgs[name].spawn.size[2] / 2 for name in UNIT_NAMES],
+            UNIT_HEIGHTS,
+            device=self.device,
+            dtype=self.game.dtype,
+        ).view(1, constants.UNIT_COUNT)
+        translations = torch.zeros(
+            (self.num_envs, constants.UNIT_COUNT, 3),
             device=self.device,
             dtype=self.game.dtype,
         )
-        for unit_slot, name in enumerate(UNIT_NAMES):
-            yaw = self.world.yaw[env_ids, unit_slot]
-            root_pose = torch.zeros(
-                (env_ids.shape[0], 7),
-                device=self.device,
-                dtype=self.game.dtype,
-            )
-            root_pose[:, :2] = (
-                self.world.position_xy[env_ids, unit_slot] + self.scene.env_origins[env_ids, :2]
-            )
-            root_pose[:, 2] = self.world.position_z[env_ids, unit_slot] + half_height[unit_slot]
-            root_pose[:, 3] = torch.cos(yaw / 2)
-            root_pose[:, 6] = torch.sin(yaw / 2)
-            self.units[name].write_root_pose_to_sim(root_pose, env_ids)
+        translations[..., :2] = self.world.position_xy + self.scene.env_origins[:, None, :2]
+        translations[..., 2] = self.world.position_z + half_height
+        orientations = torch.zeros(
+            (self.num_envs, constants.UNIT_COUNT, 4),
+            device=self.device,
+            dtype=self.game.dtype,
+        )
+        orientations[..., 0] = torch.cos(self.world.yaw / 2)
+        orientations[..., 3] = torch.sin(self.world.yaw / 2)
+        scales = torch.where(
+            self.game.alive[..., None],
+            torch.ones_like(translations),
+            torch.full_like(translations, 0.08),
+        )
+        marker_indices = (
+            torch.arange(constants.UNIT_COUNT, device=self.device)
+            .view(1, -1)
+            .expand(self.num_envs, -1)
+        )
+        self.unit_markers.visualize(
+            translations=translations.reshape(-1, 3),
+            orientations=orientations.reshape(-1, 4),
+            scales=scales.reshape(-1, 3),
+            marker_indices=marker_indices.reshape(-1),
+        )
 
     def _get_observations(self) -> dict[str, torch.Tensor]:
         observation = self.observation_builder.build(self.game, self.world)

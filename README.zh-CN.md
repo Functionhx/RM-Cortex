@@ -17,7 +17,7 @@
 </p>
 
 > [!IMPORTANT]
-> RM-Cortex 目前处于 **pre-alpha** 阶段。首个端到端 Phase 1 实现已经落地；原生 Isaac Lab 验证和完整规模基线训练仍待完成。
+> RM-Cortex 目前处于 **pre-alpha** 阶段。首个端到端 Phase 1 实现已经落地，原生 Isaac Lab 无头场景验证已通过；完整规模基线训练仍待完成。
 
 RM-Cortex 是一个面向 RoboMaster 自主决策的独立研究项目。它把基于官方规则的裁判系统、批量运动学世界、Isaac Lab 集成、异构多智能体策略和回放标定连接成一套可复现的完整研究栈。
 
@@ -51,7 +51,26 @@ python scripts/train.py --updates 1 --num-envs 8
 
 当前实现已经包含向量化裁判、带 LOS 与装甲几何的 2.5D Torch 场地、确定性脚本对手、可安全选装的 Isaac Lab `DirectMARLEnv`，以及带集中式 critic、动作掩码、checkpoint 和评估流程的参数共享 MAPPO 基线。
 
-使用 `python scripts/benchmark_world.py --num-envs 1024 4096` 测量 Torch World 吞吐；在 Isaac Lab 启动环境中使用 `python scripts/isaac_smoke.py --headless` 验证可选场景后端。
+使用 `python scripts/benchmark_world.py --num-envs 1024 4096` 测量 Torch World 吞吐；在 Isaac Lab 启动环境中使用 `PYTHONPATH=src /path/to/IsaacLab/isaaclab.sh -p scripts/isaac_smoke.py --headless` 验证可选场景后端。
+
+## 可视化
+
+导出无需 Isaac Lab 的轻量 2D 对局动画：
+
+```bash
+cd rm-sim
+python -m pip install -e ".[visualization]"
+python scripts/visualize_torch.py --steps 300 --fps 10
+```
+
+生成但不纳入版本控制的 `outputs/torch_demo.gif` 会显示角色、朝向、轨迹、血条、射击线与队伍资源。在带图形桌面的终端中可启动交互式 3D 场景：
+
+```bash
+PYTHONPATH=src /path/to/IsaacLab/isaaclab.sh \
+  -p scripts/visualize_isaac.py --num-envs 1
+```
+
+Isaac 场景使用由权威 Torch World 同步的轻量可视标记，不会引入第二套比赛状态。
 
 ## 设计原则
 
@@ -69,7 +88,8 @@ python scripts/train.py --updates 1 --num-envs 8
 - [x] 实现轻量 Torch World 与脚本基线
 - [x] 接入 Isaac Lab `DirectMARLEnv` 并完成规则一致性测试
 - [x] 实现可复现的 PPO/MAPPO 训练与评估链路
-- [ ] 在原生 Isaac Lab 中完成场景验证并发布完整训练指标
+- [x] 在原生 Isaac Lab 无头运行时中完成场景验证
+- [ ] 发布完整规模基线训练指标
 - [ ] 使用比赛回放标定命中与观测模型
 
 ## 仓库地图
@@ -79,7 +99,7 @@ python scripts/train.py --updates 1 --num-envs 8
 | [`HANDOFF.md`](HANDOFF.md) | 当前状态与下一步入口 |
 | `rm-sim/src/` | 裁判、Torch World、Isaac 适配与 MAPPO 包 |
 | `rm-sim/configs/` | 可复现实验配置 |
-| `rm-sim/scripts/` | 训练、评估、Isaac 冒烟与性能基准入口 |
+| `rm-sim/scripts/` | 训练、评估、可视化、Isaac 冒烟与性能基准入口 |
 | [`AGENTS.md`](AGENTS.md) | 贡献流程与仓库约定 |
 
 官方手册、比赛数据、Isaac 运行时、训练产物和 checkpoint 不随仓库分发。贡献者需要自行取得授权材料，并通过本地配置接入，不能将其提交到仓库。
