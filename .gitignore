@@ -1,6 +1,9 @@
 # External reference repository
 /RMUC-OfflineRL/
 
+# Local developer planning and skill artifacts
+/docs/superpowers/
+
 # Official manuals and competition data (local-only)
 /*.7z
 /*.pdf

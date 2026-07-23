@@ -1,17 +1,12 @@
 # HANDOFF — RM-Cortex
 
 - 更新日期：2026-07-23
-- 当前阶段：官方 V1.5.0 规则审计与 Phase 1 设计已完成，代码尚未脚手架化
+- 当前阶段：官方 V1.5.0 规则审计与 Phase 1 设计已完成；M1 裁判纵切和 M2/M3 后端边界已开始实现
 - 项目目标：建立可验证的 RMUC 裁判、批量仿真、多智能体训练与后续 sim2real 链路
 
-## 必读顺序
+## 本地开发资料
 
-1. [`docs/superpowers/specs/2026-07-23-rmuc-v1.5.0-pdf-audit.md`](docs/superpowers/specs/2026-07-23-rmuc-v1.5.0-pdf-audit.md)：本轮纠错、工程图读取结果与残余歧义。
-2. [`docs/superpowers/specs/2026-07-23-rmuc-rules-digest.md`](docs/superpowers/specs/2026-07-23-rmuc-rules-digest.md)：带 `[TXT]`、`[FIG]`、`[SIM]`、`[AMB]` 标签的规则索引。
-3. [`docs/superpowers/specs/2026-07-23-rmuc-referee-system-design.md`](docs/superpowers/specs/2026-07-23-rmuc-referee-system-design.md)：纯 Torch + Isaac Lab 架构。
-4. [`docs/superpowers/specs/2026-07-23-rmuc-implementation-plan.md`](docs/superpowers/specs/2026-07-23-rmuc-implementation-plan.md)：M1～M5 的执行和验收顺序。
-
-规则真值层级为：**最新官方规则/答疑 > V1.5.0 PDF > digest > 设计/实现**。官方手册和数据集只在本地保存，不进入公开仓库。
+维护者的规则审计、Digest、架构说明与实施计划保存在本地 `docs/superpowers/`，由 `.gitignore` 排除，不作为公开仓库内容。规则真值层级为：**最新官方规则/答疑 > V1.5.0 PDF > 本地 Digest > 设计/实现**。官方手册和数据集同样只在本地保存。
 
 ## 已冻结的设计
 
@@ -35,14 +30,16 @@
 | 空中是普通受击单位 | 不受普通伤害/撞击，不回血、不复活 |
 | 雷达直接固定增加 `P` | 先更新连续量 `x`，再执行 `P += x` |
 
-## 仍需显式保留的歧义
+## 已冻结与仍需保留的歧义
 
-- 热量正文使用 `Q1>Q2`，流程图使用 `Q1≥Q2`；默认按流程图实现并保留开关。
+- 热量正文使用 `Q1>Q2`，流程图使用 `Q1≥Q2`；项目已冻结为 `Q1≥Q2`，不保留兼容开关。
 - 官方图未定义场地坐标原点/轴向，也未给出起伏路凸起高度。
 - 手册没有给出常规命中、小陀螺收益、雷达漂移或不完整飞镖识别的概率函数。
 
 ## 下一步
 
-从实现计划 M1 开始，在 `rm-sim/` 创建 `pyproject.toml`、`src/rm_referee/` 和 `tests/rules/`。先冻结张量 schema 和带页码的常量，再按 `fsm/objective → combat → heat/power → economy/upgrade → survive/roles → rune/dart/radar` 实现。M1 规则测试通过后才进入 Torch World，随后接入 Isaac Lab 并建立逐 tick 契约测试。
+`rm-sim/` 已包含可编辑安装包、纯 Torch `GameState`/`RuleInputs`/`Referee`、战斗/热量/功率/经济/复活/雷达/胜负模块、轻量运动学和 Isaac 归一化桥。当前 27 项规则与契约测试通过；4096 环境 GPU 空载裁判基准约为 4.63ms/tick。
+
+下一步继续 M1：实现升级表应用、底盘充能、立即复活/远程回血、英雄部署、工程防御、哨兵姿态、能量机关、飞镖、前哨站旋转/重建和雷达完整计时。随后让 Torch World 生成真实 LOS/装甲相交事件，再建立实际 `DirectMARLEnv` 场景的逐 tick 契约测试。
 
 `RMUC-OfflineRL/` 是本地参考仓库，不导入、不修改、不提交。PDF、数据集、Isaac 运行时、训练日志与 checkpoint 均已由顶层 `.gitignore` 排除。
