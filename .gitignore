@@ -1,0 +1,43 @@
+# External reference repository
+/RMUC-OfflineRL/
+
+# Official manuals and competition data (local-only)
+/*.7z
+/*.pdf
+/RMUC 2026 区域赛数据集使用说明.md
+/dataset/
+/rm-sim/dataset/
+*.sqlite
+*.sqlite3
+*.db
+
+# Machine-specific Isaac runtime
+/rm-sim/external/isaaclab
+
+# Generated datasets, training runs, and checkpoints
+/rm-sim/data/
+/rm-sim/runs/
+/rm-sim/outputs/
+/rm-sim/logs/
+*.npz
+*.pt
+*.ckpt
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
