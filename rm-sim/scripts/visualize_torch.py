@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export a scripted RM-Cortex match as a dependency-light GIF."""
+"""Export a scripted RM-Cortex match as an H.264 MP4."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import argparse
 from collections import deque
 import math
 from pathlib import Path
+import subprocess
 
 import torch
 
@@ -40,17 +41,17 @@ TERRAIN_COLORS = {
     "tunnel": (8, 18, 24),
 }
 FEATURE_LABELS = {
-    "central_highland": "CENTRAL HIGH · 0.25–0.40m",
-    "red_trapezoid_highland": "TRAPEZOID HIGH",
-    "blue_trapezoid_highland": "TRAPEZOID HIGH",
+    "central_highland": "CENTRAL HIGH · 7.70×10.82m",
+    "red_trapezoid_highland": "TRAPEZOID · 23°/43°",
+    "blue_trapezoid_highland": "TRAPEZOID · 23°/43°",
     "red_road": "ROAD · 11°/15°",
     "blue_road": "ROAD · 11°/15°",
     "red_fly_ramp": "FLY RAMP · 17°",
     "blue_fly_ramp": "FLY RAMP · 17°",
-    "red_rough_road": "BUMPS",
-    "blue_rough_road": "BUMPS",
-    "red_fortress": "FORT",
-    "blue_fortress": "FORT",
+    "red_rough_road": "BUMPS · 70/240mm",
+    "blue_rough_road": "BUMPS · 70/240mm",
+    "red_fortress": "FORT · 20°",
+    "blue_fortress": "FORT · 20°",
     "red_tunnel": "TUNNEL",
     "blue_tunnel": "TUNNEL",
 }
@@ -76,10 +77,10 @@ def _parser() -> argparse.ArgumentParser:
         default=5,
         help="Capture one frame per N policy steps (default: 1 simulated second).",
     )
-    parser.add_argument("--fps", type=int, default=20, help="GIF playback frame rate.")
+    parser.add_argument("--fps", type=int, default=20, help="MP4 playback frame rate.")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--device", default="cpu")
-    parser.add_argument("--output", default="outputs/torch_demo.gif")
+    parser.add_argument("--output", default="outputs/torch_demo.mp4")
     return parser
 
 
@@ -154,6 +155,32 @@ def _draw_static(draw: object, arena: object, label_font: object) -> None:
             outline=outline,
         )
         draw.line((*points, points[0]), fill=outline, width=2)
+        if primitive.category == "rough":
+            angle = math.radians(primitive.yaw_deg)
+            along = (math.cos(angle), math.sin(angle))
+            across = (-math.sin(angle), math.cos(angle))
+            half_x = primitive.size_xy[0] / 2
+            half_y = primitive.size_xy[1] / 2
+            ridge = -half_x + 0.12
+            ridge_color = tuple(min(channel + 28, 255) for channel in outline)
+            while ridge < half_x:
+                center_x = primitive.center_xy[0] + along[0] * ridge
+                center_y = primitive.center_xy[1] + along[1] * ridge
+                draw.line(
+                    (
+                        *_to_pixel(
+                            center_x - across[0] * half_y,
+                            center_y - across[1] * half_y,
+                        ),
+                        *_to_pixel(
+                            center_x + across[0] * half_y,
+                            center_y + across[1] * half_y,
+                        ),
+                    ),
+                    fill=ridge_color,
+                    width=1,
+                )
+                ridge += 0.24
         if primitive.elevation_start_m != primitive.elevation_end_m:
             angle = torch.deg2rad(torch.tensor(primitive.yaw_deg))
             direction = torch.stack((torch.cos(angle), torch.sin(angle)))
@@ -183,9 +210,17 @@ def _draw_static(draw: object, arena: object, label_font: object) -> None:
                 stroke_fill=(22, 31, 36),
             )
 
-    for team, sign in ((Team.RED, -1.0), (Team.BLUE, 1.0)):
+    for team in (Team.RED, Team.BLUE):
         color = RED if team == Team.RED else BLUE
-        base_zone = _regular_polygon((12.2 * sign, 0.0), (1.65, 1.75), 6)
+        base_center_tensor = arena.base_centers(
+            device="cpu",
+            dtype=torch.float32,
+        )[team]
+        base_center = (
+            float(base_center_tensor[0]),
+            float(base_center_tensor[1]),
+        )
+        base_zone = _regular_polygon(base_center, (1.05, 0.90), 6)
         draw.line((*base_zone, base_zone[0]), fill=color, width=2)
         outpost_center = arena.outpost_centers(
             device="cpu",
@@ -197,7 +232,14 @@ def _draw_static(draw: object, arena: object, label_font: object) -> None:
             6,
         )
         draw.line((*outpost_zone, outpost_zone[0]), fill=color, width=2)
-        supply_center = (11.9 * sign, 5.6 * sign)
+        supply_center_tensor = arena.supply_centers(
+            device="cpu",
+            dtype=torch.float32,
+        )[team]
+        supply_center = (
+            float(supply_center_tensor[0]),
+            float(supply_center_tensor[1]),
+        )
         supply_half = (1.25, 1.05)
         supply_box = (
             *_to_pixel(
@@ -213,6 +255,23 @@ def _draw_static(draw: object, arena: object, label_font: object) -> None:
         draw.text(
             _to_pixel(*supply_center),
             "SUPPLY",
+            fill=(190, 205, 212),
+            font=label_font,
+            anchor="mm",
+        )
+        pad_center_tensor = arena.aerial_pad_centers(
+            device="cpu",
+            dtype=torch.float32,
+        )[team]
+        pad_center = (
+            float(pad_center_tensor[0]),
+            float(pad_center_tensor[1]),
+        )
+        pad_outline = _regular_polygon(pad_center, (0.95, 0.85), 8)
+        draw.line((*pad_outline, pad_outline[0]), fill=color, width=2)
+        draw.text(
+            _to_pixel(*pad_center),
+            "PAD",
             fill=(190, 205, 212),
             font=label_font,
             anchor="mm",
@@ -246,8 +305,8 @@ def main() -> None:
         raise ValueError("--steps must be positive when provided")
     if args.capture_every <= 0 or args.fps <= 0:
         raise ValueError("--capture-every and --fps must be positive")
-    if Path(args.output).suffix.lower() != ".gif":
-        raise ValueError("--output must end in .gif")
+    if Path(args.output).suffix.lower() != ".mp4":
+        raise ValueError("--output must end in .mp4")
 
     try:
         from PIL import Image, ImageDraw
@@ -489,16 +548,57 @@ def main() -> None:
 
     destination = Path(args.output)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    first, *remaining = frames
-    first.save(
-        destination,
-        save_all=True,
-        append_images=remaining,
-        duration=round(1000 / args.fps),
-        loop=0,
-        disposal=2,
-        optimize=False,
-    )
+    try:
+        encoder = subprocess.Popen(
+            (
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "rawvideo",
+                "-pixel_format",
+                "rgb24",
+                "-video_size",
+                f"{CANVAS[0]}x{CANVAS[1]}",
+                "-framerate",
+                str(args.fps),
+                "-i",
+                "-",
+                "-an",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "medium",
+                "-crf",
+                "21",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                str(destination),
+            ),
+            stdin=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except FileNotFoundError as error:
+        raise RuntimeError("ffmpeg with libx264 is required to export MP4") from error
+    assert encoder.stdin is not None
+    assert encoder.stderr is not None
+    try:
+        for frame in frames:
+            encoder.stdin.write(frame.convert("RGB").tobytes())
+    except BrokenPipeError as error:
+        encoder.stdin.close()
+        message = encoder.stderr.read().decode(errors="replace")
+        encoder.wait()
+        raise RuntimeError(f"ffmpeg failed while encoding MP4: {message}") from error
+    encoder.stdin.close()
+    return_code = encoder.wait()
+    encoder_error = encoder.stderr.read().decode(errors="replace")
+    if return_code != 0:
+        raise RuntimeError(f"ffmpeg failed while encoding MP4: {encoder_error}")
     print(f"Saved Torch visualization to {destination.resolve()}")
     simulated_s = simulated_steps * environment.config.policy_dt_s
     winner_name = {

@@ -6,6 +6,12 @@ import torch
 from rm_referee import GameState, RandomTape, Referee
 from rm_referee.schema import Role, Team, Weapon, slot
 from rm_world import (
+    BLUE_BASE_CENTER_XY,
+    BLUE_FORTRESS_CENTER_XY,
+    BLUE_OUTPOST_CENTER_XY,
+    RED_BASE_CENTER_XY,
+    RED_FORTRESS_CENTER_XY,
+    RED_OUTPOST_CENTER_XY,
     ArenaGeometry,
     HitModel,
     HitModelConfig,
@@ -22,8 +28,8 @@ def test_terrain_height_models_field_crown_highland_and_fly_ramp() -> None:
             (13.0, 7.5),
             (13.0, 0.0),
             (0.0, 0.0),
-            (-4.20, -6.2),
-            (-2.20, -6.2),
+            (-1.30, -6.9),
+            (-0.28, -6.9),
         )
     )
 
@@ -32,7 +38,86 @@ def test_terrain_height_models_field_crown_highland_and_fly_ramp() -> None:
     assert height[0] == pytest.approx(0.0, abs=1.0e-6)
     assert height[1] > height[0]
     assert height[2] > height[1]
-    assert height[4] - height[3] == pytest.approx(0.325, abs=0.01)
+    assert height[4] - height[3] == pytest.approx(0.312, abs=0.02)
+
+
+def test_manual_figure_4_5_feature_centers_use_center_coordinates() -> None:
+    arena = ArenaGeometry()
+
+    assert RED_BASE_CENTER_XY == pytest.approx((-11.593, 0.0))
+    assert BLUE_BASE_CENTER_XY == pytest.approx((11.593, 0.0))
+    assert RED_OUTPOST_CENTER_XY == pytest.approx((-3.008, -3.857))
+    assert BLUE_OUTPOST_CENTER_XY == pytest.approx((3.008, 3.857))
+    assert RED_FORTRESS_CENTER_XY == pytest.approx((-7.4, 0.0))
+    assert BLUE_FORTRESS_CENTER_XY == pytest.approx((7.4, 0.0))
+    assert torch.allclose(
+        arena.outpost_centers(device="cpu", dtype=torch.float32),
+        torch.tensor((RED_OUTPOST_CENTER_XY, BLUE_OUTPOST_CENTER_XY)),
+    )
+
+
+def test_central_highland_uses_the_figure_4_27_polygon_not_a_rectangle() -> None:
+    arena = ArenaGeometry()
+    central = next(
+        primitive for primitive in arena.config.terrain if primitive.name == "central_highland"
+    )
+    corners = arena.terrain_corners(
+        central,
+        device="cpu",
+        dtype=torch.float32,
+    )
+    samples = torch.tensor(((0.0, -4.5), (3.7, -4.5)))
+    heights = arena._terrain_height_analytic(samples)
+
+    assert central.size_xy == pytest.approx((7.7, 10.82))
+    assert corners.shape == (6, 2)
+    assert heights[0] - heights[1] == pytest.approx(0.35, abs=1.0e-5)
+
+
+@pytest.mark.parametrize(
+    "feature",
+    ("road", "trapezoid_highland", "assembly", "fly_ramp", "rough_road", "fortress", "tunnel"),
+)
+def test_paired_terrain_footprints_are_center_symmetric(feature: str) -> None:
+    arena = ArenaGeometry()
+    by_name = {primitive.name: primitive for primitive in arena.config.terrain}
+    red = arena.terrain_corners(
+        by_name[f"red_{feature}"],
+        device="cpu",
+        dtype=torch.float32,
+    )
+    blue = arena.terrain_corners(
+        by_name[f"blue_{feature}"],
+        device="cpu",
+        dtype=torch.float32,
+    )
+
+    distance = torch.cdist(-red, blue)
+    assert (distance.amin(dim=0) < 1.0e-5).all()
+    assert (distance.amin(dim=1) < 1.0e-5).all()
+
+
+def test_rough_road_models_figure_4_36_bump_height_and_pitch() -> None:
+    arena = ArenaGeometry()
+    peak_and_trough = torch.tensor(((-7.60, -6.25), (-7.48, -6.25)))
+
+    heights = arena._terrain_height_analytic(peak_and_trough)
+
+    assert heights[0] - heights[1] == pytest.approx(0.070, abs=1.0e-5)
+
+
+def test_aerial_area_enforces_the_section_4_5_tether_envelope() -> None:
+    arena = ArenaGeometry()
+    red = torch.tensor(((-12.52, 5.68), (2.4, 4.0), (2.41, 4.0), (0.0, 2.9)))
+    blue = -red
+
+    assert arena.aerial_flight_area(red, Team.RED).tolist() == [True, True, False, False]
+    assert arena.aerial_flight_area(blue, Team.BLUE).tolist() == [True, True, False, False]
+    projected = arena.project_to_aerial_flight_area(
+        torch.tensor(((9.0, 0.0),)),
+        Team.RED,
+    )
+    assert torch.allclose(projected, torch.tensor(((2.4, 3.0),)))
 
 
 def test_team_spawns_are_center_symmetric() -> None:

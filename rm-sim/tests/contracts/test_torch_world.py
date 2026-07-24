@@ -88,6 +88,28 @@ def test_outposts_use_figure_4_5_diagonal_centers_and_zones() -> None:
     assert occupancy[0, blue, Zone.OUTPOST]
 
 
+def test_all_aerial_tactical_routes_stay_inside_the_section_4_5_airspace() -> None:
+    arena = ArenaGeometry()
+    aerial_missions = (
+        TacticalMission.AERIAL_OPENING,
+        TacticalMission.AERIAL_CONTROL,
+        TacticalMission.AERIAL_PRESSURE,
+        TacticalMission.AERIAL_ASSAULT,
+        TacticalMission.AERIAL_RETURN,
+        TacticalMission.AERIAL_PAD,
+    )
+
+    for mission in aerial_missions:
+        for team in (Team.RED, Team.BLUE):
+            waypoints = tactical_route_waypoints(
+                mission,
+                team,
+                device="cpu",
+                dtype=torch.float32,
+            )
+            assert arena.aerial_flight_area(waypoints, team).all(), (mission, team)
+
+
 def test_aerial_sortie_schedule_has_explicit_flight_and_return_windows() -> None:
     elapsed = torch.tensor(
         (0.0, 5.0, 16.9, 17.0, 24.9, 25.0, 74.9, 75.0, 84.9, 85.0),

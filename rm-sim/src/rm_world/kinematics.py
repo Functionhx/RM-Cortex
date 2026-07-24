@@ -9,7 +9,7 @@ import torch
 from torch import Tensor
 
 from rm_referee import constants
-from rm_referee.schema import Role, Team, slot, unit_roles
+from rm_referee.schema import Role, Team, slot, unit_roles, unit_teams
 from rm_referee.state import GameState
 from rm_world.arena import ArenaConfig, ArenaGeometry
 
@@ -29,7 +29,7 @@ class KinematicConfig:
     boundary_margin_m: float = 0.0
     enable_static_collisions: bool = False
     enable_unit_collisions: bool = False
-    collision_iterations: int = 4
+    collision_iterations: int = 8
     collision_clearance_m: float = 0.05
 
 
@@ -318,6 +318,16 @@ class KinematicWorld:
         candidate_xy[..., 1].clamp_(
             min=-self.config.field_width_m / 2 + self.config.boundary_margin_m,
             max=self.config.field_width_m / 2 - self.config.boundary_margin_m,
+        )
+        aerial_projection = self.arena.project_to_aerial_flight_area(
+            candidate_xy,
+            unit_teams(game.device),
+            margin_m=self.config.boundary_margin_m,
+        )
+        candidate_xy = torch.where(
+            aerial[None, :, None],
+            aerial_projection,
+            candidate_xy,
         )
         if self.config.enable_static_collisions:
             projected = self.arena.project_out_of_obstacles(

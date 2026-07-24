@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 
 import torch
 from torch import Tensor
@@ -12,15 +13,38 @@ from rm_referee.schema import Role, Zone, unit_roles, unit_teams
 from rm_referee.state import GameState
 
 
-# Manual V1.5.0 p. 34, figure 4-5. The blue outpost is 17,008mm
-# from the red short edge and 3,643mm from the north long edge.
-# With the field origin at center, the paired centers rotate by 180 degrees.
-RED_OUTPOST_CENTER_XY = (-3.008, -3.643)
-BLUE_OUTPOST_CENTER_XY = (3.008, 3.643)
-# Figure 4-5 placement is diagram-derived here because the pad center is not
-# separately dimensioned. Keep it centralized for spawn and contact checks.
-RED_AERIAL_PAD_CENTER_XY = (-13.0, 5.0)
-BLUE_AERIAL_PAD_CENTER_XY = (13.0, -5.0)
+# Manual V1.5.0 p. 34, figure 4-5. Coordinates use the field center as the
+# origin, +x from red to blue, and +y toward the red aerial pad. Paired
+# features rotate by 180 degrees.
+RED_BASE_CENTER_XY = (-11.593, 0.0)
+BLUE_BASE_CENTER_XY = (11.593, 0.0)
+RED_OUTPOST_CENTER_XY = (-3.008, -3.857)
+BLUE_OUTPOST_CENTER_XY = (3.008, 3.857)
+RED_FORTRESS_CENTER_XY = (-7.400, 0.0)
+BLUE_FORTRESS_CENTER_XY = (7.400, 0.0)
+
+# Figure 4-5 does not separately dimension these centers. They are digitized
+# from the dimensioned plan and therefore remain explicit [SIM] placements.
+RED_AERIAL_PAD_CENTER_XY = (-12.52, 5.68)
+BLUE_AERIAL_PAD_CENTER_XY = (12.52, -5.68)
+RED_SUPPLY_CENTER_XY = (-11.55, -5.65)
+BLUE_SUPPLY_CENTER_XY = (11.55, 5.65)
+
+# Manual V1.5.0 p. 63: the cable stop is approximately 14m from the team's
+# short edge and the elastic safety tether is 2.4m long. The y limits are a
+# Phase 1 [SIM] envelope for the pad/road airspace described by section 4.5
+# because the manual does not publish a closed airspace boundary polygon.
+AERIAL_FORWARD_LIMIT_M = 2.4
+AERIAL_CORRIDOR_MIN_Y_M = 3.0
+AERIAL_CORRIDOR_MAX_Y_M = 7.1
+
+
+def _center_symmetric(
+    footprint: tuple[tuple[float, float], ...],
+) -> tuple[tuple[float, float], ...]:
+    """Rotate a polygon by 180 degrees while preserving winding."""
+
+    return tuple((-x, -y) for x, y in reversed(footprint))
 
 
 @dataclass(frozen=True)
@@ -40,135 +64,140 @@ class TerrainPrimitive:
     yaw_deg: float = 0.0
     category: str = "platform"
     team: int | None = None
+    footprint_xy: tuple[tuple[float, float], ...] = ()
+
+
+_CENTRAL_HIGHLAND_FOOTPRINT = (
+    (-3.85, -5.41),
+    (1.50, -5.41),
+    (3.85, -2.20),
+    (3.85, 5.41),
+    (-1.50, 5.41),
+    (-3.85, 2.20),
+)
+_RED_ASSEMBLY_FOOTPRINT = (
+    (-1.90, 0.20),
+    (-1.65, 1.55),
+    (-0.55, 1.30),
+    (0.15, 0.55),
+    (0.10, -0.35),
+    (-0.85, -0.20),
+)
+_RED_TRAPEZOID_FOOTPRINT = (
+    (-10.80, 7.40),
+    (-0.30, 7.40),
+    (-0.30, 6.40),
+    (-4.09, 6.40),
+    (-6.36, 3.02),
+    (-10.80, 3.02),
+)
+_RED_ROAD_FOOTPRINT = (
+    (-10.10, -7.40),
+    (-1.20, -7.40),
+    (-1.20, -6.15),
+    (-2.60, -6.15),
+    (-3.80, -4.15),
+    (-4.85, -3.75),
+    (-10.10, -3.75),
+)
+_RED_FORTRESS_FOOTPRINT = (
+    (-8.52, 0.00),
+    (-7.96, -0.9695),
+    (-6.84, -0.9695),
+    (-6.28, 0.00),
+    (-6.84, 0.9695),
+    (-7.96, 0.9695),
+)
 
 
 DEFAULT_TERRAIN: tuple[TerrainPrimitive, ...] = (
-    TerrainPrimitive(
-        "central_highland",
-        (0.0, 0.0),
-        (5.8, 6.4),
-        0.35,
-        0.35,
-        category="central",
-    ),
-    TerrainPrimitive(
-        "central_north_ramp",
-        (0.0, 4.25),
-        (2.1, 5.8),
-        0.35,
-        0.0,
-        yaw_deg=90.0,
-        category="ramp",
-    ),
-    TerrainPrimitive(
-        "central_south_ramp",
-        (0.0, -4.25),
-        (2.1, 5.8),
-        0.0,
-        0.35,
-        yaw_deg=90.0,
-        category="ramp",
-    ),
-    TerrainPrimitive(
-        "red_assembly",
-        (-3.2, 0.0),
-        (1.3, 3.0),
-        0.25,
-        0.25,
-        category="assembly",
-        team=0,
-    ),
-    TerrainPrimitive(
-        "blue_assembly",
-        (3.2, 0.0),
-        (1.3, 3.0),
-        0.25,
-        0.25,
-        category="assembly",
-        team=1,
-    ),
-    TerrainPrimitive(
-        "red_trapezoid_highland",
-        (-9.45, 5.55),
-        (6.5, 2.4),
-        0.30,
-        0.30,
-        category="trapezoid",
-        team=0,
-    ),
-    TerrainPrimitive(
-        "red_trapezoid_ramp",
-        (-6.8, 3.9),
-        (3.0, 1.6),
-        0.0,
-        0.30,
-        yaw_deg=135.0,
-        category="ramp",
-        team=0,
-    ),
-    TerrainPrimitive(
-        "blue_trapezoid_highland",
-        (9.45, -5.55),
-        (6.5, 2.4),
-        0.30,
-        0.30,
-        yaw_deg=180.0,
-        category="trapezoid",
-        team=1,
-    ),
-    TerrainPrimitive(
-        "blue_trapezoid_ramp",
-        (6.8, -3.9),
-        (3.0, 1.6),
-        0.0,
-        0.30,
-        yaw_deg=315.0,
-        category="ramp",
-        team=1,
-    ),
+    # Public-road regions are at field height. Their plan footprint follows
+    # figures 4-5 and 4-34; raised subfeatures are represented below.
     TerrainPrimitive(
         "red_road",
-        (-9.5, -5.4),
-        (6.5, 2.0),
-        0.25,
-        0.25,
+        (-5.65, -5.575),
+        (8.901, 3.651),
+        0.0,
+        0.0,
         category="road",
         team=0,
-    ),
-    TerrainPrimitive(
-        "red_road_link",
-        (-5.1, -4.4),
-        (3.0, 1.5),
-        0.25,
-        0.35,
-        yaw_deg=35.0,
-        category="road",
-        team=0,
+        footprint_xy=_RED_ROAD_FOOTPRINT,
     ),
     TerrainPrimitive(
         "blue_road",
-        (9.5, 5.4),
-        (6.5, 2.0),
-        0.25,
-        0.25,
+        (5.65, 5.575),
+        (8.901, 3.651),
+        0.0,
+        0.0,
         yaw_deg=180.0,
         category="road",
         team=1,
+        footprint_xy=_center_symmetric(_RED_ROAD_FOOTPRINT),
+    ),
+    # Figure 4-26 gives an irregular 10.505m x 4.380m footprint, 200--400mm
+    # height, and 23/43 degree faces. Phase 1 uses the 300mm median surface.
+    TerrainPrimitive(
+        "red_trapezoid_highland",
+        (-5.55, 5.21),
+        (10.505, 4.380),
+        0.30,
+        0.30,
+        category="trapezoid",
+        team=0,
+        footprint_xy=_RED_TRAPEZOID_FOOTPRINT,
     ),
     TerrainPrimitive(
-        "blue_road_link",
-        (5.1, 4.4),
-        (3.0, 1.5),
-        0.25,
-        0.35,
-        yaw_deg=215.0,
-        category="road",
+        "blue_trapezoid_highland",
+        (5.55, -5.21),
+        (10.505, 4.380),
+        0.30,
+        0.30,
+        yaw_deg=180.0,
+        category="trapezoid",
         team=1,
+        footprint_xy=_center_symmetric(_RED_TRAPEZOID_FOOTPRINT),
     ),
+    # Figure 4-27 publishes the 7.700m x 10.820m envelope. Its skewed,
+    # center-symmetric outline replaces the old rectangular approximation.
+    TerrainPrimitive(
+        "central_highland",
+        (0.0, 0.0),
+        (7.7, 10.82),
+        0.35,
+        0.35,
+        category="central",
+        footprint_xy=_CENTRAL_HIGHLAND_FOOTPRINT,
+    ),
+    # Figures 4-28 and 4-29 place the two assembly areas below the energy
+    # mechanism at field center. They are overlays on the central highland.
+    TerrainPrimitive(
+        "red_assembly",
+        (-0.875, 0.60),
+        (2.05, 1.90),
+        0.35,
+        0.35,
+        category="assembly",
+        team=0,
+        footprint_xy=_RED_ASSEMBLY_FOOTPRINT,
+    ),
+    TerrainPrimitive(
+        "blue_assembly",
+        (0.875, -0.60),
+        (2.05, 1.90),
+        0.35,
+        0.35,
+        yaw_deg=180.0,
+        category="assembly",
+        team=1,
+        footprint_xy=_center_symmetric(_RED_ASSEMBLY_FOOTPRINT),
+    ),
+    # Figure 4-37: 17 degree face, 1.145m horizontal run, 0.860m width,
+    # and 0.203m/0.553m edge elevations. The separate 0.650m value is the
+    # flight gap and must not be added to the ramp footprint.
     TerrainPrimitive(
         "red_fly_ramp",
-        (-3.2, -6.2),
-        (2.151, 1.145),
+        (-0.79, -6.90),
+        (1.145, 0.860),
         0.203,
         0.553,
         category="fly_ramp",
@@ -176,8 +205,8 @@ DEFAULT_TERRAIN: tuple[TerrainPrimitive, ...] = (
     ),
     TerrainPrimitive(
         "blue_fly_ramp",
-        (3.2, 6.2),
-        (2.151, 1.145),
+        (0.79, 6.90),
+        (1.145, 0.860),
         0.203,
         0.553,
         yaw_deg=180.0,
@@ -186,45 +215,51 @@ DEFAULT_TERRAIN: tuple[TerrainPrimitive, ...] = (
     ),
     TerrainPrimitive(
         "red_rough_road",
-        (-10.4, -6.25),
-        (2.0, 1.2),
-        0.04,
-        0.04,
+        (-7.60, -6.25),
+        (2.560, 1.450),
+        0.0,
+        0.0,
         category="rough",
         team=0,
     ),
     TerrainPrimitive(
         "blue_rough_road",
-        (10.4, 6.25),
-        (2.0, 1.2),
-        0.04,
-        0.04,
+        (7.60, 6.25),
+        (2.560, 1.450),
+        0.0,
+        0.0,
         yaw_deg=180.0,
         category="rough",
         team=1,
     ),
+    # Figure 4-25: a regular hexagonal 20 degree platform with 1.120m side,
+    # 1.939m height across flats, and a 150mm top elevation.
     TerrainPrimitive(
         "red_fortress",
-        (-3.8, -4.2),
-        (1.12, 1.939),
+        RED_FORTRESS_CENTER_XY,
+        (2.240, 1.939),
         0.15,
         0.15,
         category="fortress",
         team=0,
+        footprint_xy=_RED_FORTRESS_FOOTPRINT,
     ),
     TerrainPrimitive(
         "blue_fortress",
-        (3.8, 4.2),
-        (1.12, 1.939),
+        BLUE_FORTRESS_CENTER_XY,
+        (2.240, 1.939),
         0.15,
         0.15,
         yaw_deg=180.0,
         category="fortress",
         team=1,
+        footprint_xy=_center_symmetric(_RED_FORTRESS_FOOTPRINT),
     ),
+    # Figure 4-34 publishes the 0.700m opening and 0.800m roof width but not
+    # a standalone global center dimension. The plan placement remains [SIM].
     TerrainPrimitive(
         "red_tunnel",
-        (-4.1, -4.65),
+        (-4.05, -4.65),
         (1.6, 0.8),
         0.0,
         0.0,
@@ -234,7 +269,7 @@ DEFAULT_TERRAIN: tuple[TerrainPrimitive, ...] = (
     ),
     TerrainPrimitive(
         "blue_tunnel",
-        (4.1, 4.65),
+        (4.05, 4.65),
         (1.6, 0.8),
         0.0,
         0.0,
@@ -259,10 +294,10 @@ class ArenaConfig:
     # these boxes represent the central mechanism and retaining walls.
     obstacles: tuple[tuple[float, float, float, float], ...] = (
         (-0.65, 0.65, -0.80, 0.80),
-        (-4.05, -3.72, -2.30, 2.30),
-        (3.72, 4.05, -2.30, 2.30),
-        (-8.15, -7.82, 3.25, 5.85),
-        (7.82, 8.15, -5.85, -3.25),
+        (-4.05, -3.72, -2.30, -0.55),
+        (-4.05, -3.72, 0.55, 2.30),
+        (3.72, 4.05, -2.30, -0.55),
+        (3.72, 4.05, 0.55, 2.30),
     )
 
 
@@ -307,6 +342,48 @@ class ArenaGeometry:
             dtype=dtype,
         )
 
+    def base_centers(
+        self,
+        *,
+        device: torch.device | str,
+        dtype: torch.dtype,
+    ) -> Tensor:
+        """Return the figure 4-5 base centers in red/blue team order."""
+
+        return torch.tensor(
+            (RED_BASE_CENTER_XY, BLUE_BASE_CENTER_XY),
+            device=device,
+            dtype=dtype,
+        )
+
+    def fortress_centers(
+        self,
+        *,
+        device: torch.device | str,
+        dtype: torch.dtype,
+    ) -> Tensor:
+        """Return the figure 4-5 fortress centers in red/blue team order."""
+
+        return torch.tensor(
+            (RED_FORTRESS_CENTER_XY, BLUE_FORTRESS_CENTER_XY),
+            device=device,
+            dtype=dtype,
+        )
+
+    def supply_centers(
+        self,
+        *,
+        device: torch.device | str,
+        dtype: torch.dtype,
+    ) -> Tensor:
+        """Return diagram-derived ``[SIM]`` supply centers."""
+
+        return torch.tensor(
+            (RED_SUPPLY_CENTER_XY, BLUE_SUPPLY_CENTER_XY),
+            device=device,
+            dtype=dtype,
+        )
+
     def aerial_pad_centers(
         self,
         *,
@@ -320,6 +397,65 @@ class ArenaGeometry:
             device=device,
             dtype=dtype,
         )
+
+    def aerial_flight_area(
+        self,
+        position_xy: Tensor,
+        team: int | Tensor,
+    ) -> Tensor:
+        """Return whether positions lie in the Phase 1 section 4.5 airspace.
+
+        The manual defines the allowed surfaces and safety-tether distances but
+        does not publish a closed flight polygon. This rectangular corridor is
+        therefore marked ``[SIM]`` and deliberately stays on the team's
+        pad/road side of the field.
+        """
+
+        if position_xy.shape[-1] != 2:
+            raise ValueError("position_xy must have shape [..., 2]")
+        team_tensor = torch.as_tensor(team, device=position_xy.device)
+        sign = torch.where(
+            team_tensor == 0,
+            torch.ones_like(team_tensor, dtype=position_xy.dtype),
+            -torch.ones_like(team_tensor, dtype=position_xy.dtype),
+        )
+        local = position_xy * sign[..., None]
+        return (
+            (local[..., 0] >= -self.config.field_length_m / 2)
+            & (local[..., 0] <= AERIAL_FORWARD_LIMIT_M)
+            & (local[..., 1] >= AERIAL_CORRIDOR_MIN_Y_M)
+            & (local[..., 1] <= AERIAL_CORRIDOR_MAX_Y_M)
+        )
+
+    def project_to_aerial_flight_area(
+        self,
+        position_xy: Tensor,
+        team: int | Tensor,
+        *,
+        margin_m: float = 0.0,
+    ) -> Tensor:
+        """Clamp aerial positions to the Phase 1 section 4.5 corridor."""
+
+        if margin_m < 0:
+            raise ValueError("margin_m must be non-negative")
+        team_tensor = torch.as_tensor(team, device=position_xy.device)
+        sign = torch.where(
+            team_tensor == 0,
+            torch.ones_like(team_tensor, dtype=position_xy.dtype),
+            -torch.ones_like(team_tensor, dtype=position_xy.dtype),
+        )
+        local = position_xy * sign[..., None]
+        local_x = torch.clamp(
+            local[..., 0],
+            min=-self.config.field_length_m / 2 + margin_m,
+            max=AERIAL_FORWARD_LIMIT_M,
+        )
+        local_y = torch.clamp(
+            local[..., 1],
+            min=AERIAL_CORRIDOR_MIN_Y_M,
+            max=AERIAL_CORRIDOR_MAX_Y_M,
+        )
+        return torch.stack((local_x, local_y), dim=-1) * sign[..., None]
 
     def _terrain_tensors(
         self,
@@ -368,13 +504,13 @@ class ArenaGeometry:
     def spawn_positions(self, game: GameState) -> Tensor:
         red = torch.tensor(
             (
-                (-10.8, 0.0),
+                (-10.5, 1.3),
                 (-12.0, -2.0),
                 (-10.0, -3.0),
                 (-10.0, 3.0),
                 RED_AERIAL_PAD_CENTER_XY,
                 (-9.0, 0.0),
-                (-12.5, 0.0),
+                RED_BASE_CENTER_XY,
                 RED_OUTPOST_CENTER_XY,
             ),
             device=game.device,
@@ -393,6 +529,12 @@ class ArenaGeometry:
         device: torch.device | str,
         dtype: torch.dtype,
     ) -> Tensor:
+        if primitive.footprint_xy:
+            return torch.tensor(
+                primitive.footprint_xy,
+                device=device,
+                dtype=dtype,
+            )
         half_x = primitive.size_xy[0] / 2
         half_y = primitive.size_xy[1] / 2
         local = torch.tensor(
@@ -415,6 +557,32 @@ class ArenaGeometry:
         )
         center = torch.tensor(primitive.center_xy, device=device, dtype=dtype)
         return local @ rotation.T + center
+
+    @staticmethod
+    def _points_in_polygon(position_xy: Tensor, polygon_xy: Tensor) -> Tensor:
+        """Vectorized even-odd point-in-polygon test for an arbitrary batch."""
+
+        inside = torch.zeros(
+            position_xy.shape[:-1],
+            device=position_xy.device,
+            dtype=torch.bool,
+        )
+        x = position_xy[..., 0]
+        y = position_xy[..., 1]
+        previous = polygon_xy[-1]
+        epsilon = torch.finfo(position_xy.dtype).eps
+        for current in polygon_xy:
+            crosses_y = (current[1] > y) != (previous[1] > y)
+            denominator = previous[1] - current[1]
+            denominator = torch.where(
+                torch.abs(denominator) < epsilon,
+                torch.full_like(denominator, epsilon),
+                denominator,
+            )
+            edge_x = (previous[0] - current[0]) * (y - current[1]) / denominator + current[0]
+            inside ^= crosses_y & (x < edge_x)
+            previous = current
+        return inside
 
     def _terrain_height_analytic(self, position_xy: Tensor) -> Tensor:
         edge_distance = torch.clamp(
@@ -441,15 +609,27 @@ class ArenaGeometry:
             offset = position_xy - centers[index]
             local_x = cosine[index] * offset[..., 0] - sine[index] * offset[..., 1]
             local_y = sine[index] * offset[..., 0] + cosine[index] * offset[..., 1]
-            inside = (torch.abs(local_x) <= sizes[index, 0] / 2) & (
-                torch.abs(local_y) <= sizes[index, 1] / 2
-            )
+            if primitive.footprint_xy:
+                polygon = self.terrain_corners(
+                    primitive,
+                    device=position_xy.device,
+                    dtype=position_xy.dtype,
+                )
+                inside = self._points_in_polygon(position_xy, polygon)
+            else:
+                inside = (torch.abs(local_x) <= sizes[index, 0] / 2) & (
+                    torch.abs(local_y) <= sizes[index, 1] / 2
+                )
             fraction = torch.clamp(
                 local_x / sizes[index, 0] + 0.5,
                 min=0.0,
                 max=1.0,
             )
             elevation = start[index] + fraction * (end[index] - start[index])
+            if primitive.category == "rough":
+                # Figure 4-36 specifies 70mm bumps at 240mm pitch. A cosine
+                # profile is the Phase 1 differentiable [SIM] approximation.
+                elevation = elevation + 0.035 * (1.0 + torch.cos(2.0 * math.pi * local_x / 0.240))
             height = torch.where(
                 inside,
                 torch.maximum(height, crown + elevation),
@@ -516,14 +696,14 @@ class ArenaGeometry:
         # Per-team centers. Neutral central high ground is intentionally shared.
         red = torch.tensor(
             (
-                (-11.5, -5.2),  # supply
-                (-12.3, 0.0),  # base
+                RED_SUPPLY_CENTER_XY,  # supply
+                RED_BASE_CENTER_XY,  # base
                 (0.0, 0.0),  # central high
-                (-8.0, 4.8),  # trapezoid high
+                (-9.6, 4.2),  # trapezoid-high gain point [SIM]
                 RED_OUTPOST_CENTER_XY,  # outpost (figure 4-5)
-                (-3.8, -4.2),  # own fortress
-                (3.8, 4.2),  # enemy fortress
-                (-0.9, -1.8),  # assembly
+                RED_FORTRESS_CENTER_XY,  # own fortress
+                BLUE_FORTRESS_CENTER_XY,  # enemy fortress
+                (-0.875, 0.60),  # assembly (figures 4-28 and 4-29)
             ),
             device=device,
             dtype=dtype,
@@ -534,13 +714,13 @@ class ArenaGeometry:
         half_extent = torch.tensor(
             (
                 (1.3, 1.2),
-                (1.3, 1.3),
+                (1.1, 1.0),
                 (2.6, 2.0),
                 (1.3, 1.2),
                 (1.2, 1.2),
-                (1.0, 1.0),
-                (1.0, 1.0),
-                (1.1, 1.0),
+                (1.12, 0.97),
+                (1.12, 0.97),
+                (1.2, 1.1),
             ),
             device=device,
             dtype=dtype,
@@ -555,10 +735,10 @@ class ArenaGeometry:
         dtype = position_xy.dtype
         red_finish = torch.tensor(
             (
-                (-3.0, -5.8),  # road
-                (-0.5, 3.5),  # high ground
-                (-5.0, 5.8),  # fly ramp
-                (-1.5, -4.8),  # tunnel
+                (-2.0, -6.7),  # road [SIM]
+                (2.8, 4.4),  # high ground [SIM]
+                (-0.1, -6.9),  # fly ramp [SIM]
+                (-3.6, -4.3),  # tunnel [SIM]
             ),
             device=device,
             dtype=dtype,

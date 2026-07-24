@@ -20,7 +20,7 @@ from rm_referee.schema import (
 )
 from rm_referee.state import GameState
 from rm_world.actions import WorldActions
-from rm_world.arena import ArenaGeometry
+from rm_world.arena import RED_AERIAL_PAD_CENTER_XY, ArenaGeometry
 from rm_world.geometry import NO_TARGET, RUNE_TARGET
 from rm_world.geometry import resolve_target_slots
 from rm_world.kinematics import KinematicState
@@ -174,19 +174,20 @@ TACTICAL_RED_ROUTES: dict[TacticalMission, tuple[tuple[float, float], ...]] = {
         (-2.2, -2.8),
     ),
     TacticalMission.AERIAL_OPENING: (
-        (-9.0, 5.5),
-        (-4.5, 4.8),
-        (-1.5, 4.2),
+        (-9.0, 5.7),
+        (-5.5, 5.4),
+        (-1.5, 4.8),
     ),
-    TacticalMission.AERIAL_CONTROL: ((1.5, 4.2),),
-    TacticalMission.AERIAL_PRESSURE: ((4.8, 2.8),),
-    TacticalMission.AERIAL_ASSAULT: ((9.5, 2.4),),
+    TacticalMission.AERIAL_CONTROL: ((0.5, 4.6),),
+    TacticalMission.AERIAL_PRESSURE: ((1.4, 4.3),),
+    TacticalMission.AERIAL_ASSAULT: ((2.2, 4.0),),
     TacticalMission.AERIAL_RETURN: (
-        (-9.0, 5.5),
-        (-12.4, 5.1),
-        (-13.0, 5.0),
+        (-1.5, 4.8),
+        (-5.5, 5.4),
+        (-9.0, 5.7),
+        RED_AERIAL_PAD_CENTER_XY,
     ),
-    TacticalMission.AERIAL_PAD: ((-13.0, 5.0),),
+    TacticalMission.AERIAL_PAD: (RED_AERIAL_PAD_CENTER_XY,),
     TacticalMission.SENTRY_DEFEND: (
         (-6.0, -3.0),
         (-4.8, -3.0),
@@ -1056,7 +1057,7 @@ class TacticalScriptedOpponent:
 
         aerial = roles == Role.AERIAL
         pad_red = torch.tensor(
-            (-13.0, 5.0),
+            RED_AERIAL_PAD_CENTER_XY,
             device=game.device,
             dtype=game.dtype,
         )
