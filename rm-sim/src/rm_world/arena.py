@@ -53,7 +53,8 @@ class TerrainPrimitive:
 
     Dimensions and slopes follow rule-manual figures 4-5 and 4-25--4-37.
     Placements remain approximate until official CAD/USD assets are available.
-    Elevation changes along the primitive's local x-axis.
+    Elevation normally changes along the primitive's local x-axis. Polygonal
+    slope patches can instead provide one elevation per footprint vertex.
     """
 
     name: str
@@ -65,6 +66,128 @@ class TerrainPrimitive:
     category: str = "platform"
     team: int | None = None
     footprint_xy: tuple[tuple[float, float], ...] = ()
+    vertex_elevations_m: tuple[float, ...] = ()
+
+
+def _scale_polygon(
+    footprint: tuple[tuple[float, float], ...],
+    center_xy: tuple[float, float],
+    scale: float,
+) -> tuple[tuple[float, float], ...]:
+    return tuple(
+        (
+            center_xy[0] + (x - center_xy[0]) * scale,
+            center_xy[1] + (y - center_xy[1]) * scale,
+        )
+        for x, y in footprint
+    )
+
+
+def _inset_edge(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    distance_m: float,
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """Move a counter-clockwise polygon edge toward its interior."""
+
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    length = math.hypot(dx, dy)
+    normal = (-dy / length, dx / length)
+    offset = (normal[0] * distance_m, normal[1] * distance_m)
+    return (
+        (start[0] + offset[0], start[1] + offset[1]),
+        (end[0] + offset[0], end[1] + offset[1]),
+    )
+
+
+def _mirror_surface(
+    primitive: TerrainPrimitive,
+    *,
+    name: str,
+    team: int,
+) -> TerrainPrimitive:
+    return TerrainPrimitive(
+        name=name,
+        center_xy=(-primitive.center_xy[0], -primitive.center_xy[1]),
+        size_xy=primitive.size_xy,
+        elevation_start_m=primitive.elevation_start_m,
+        elevation_end_m=primitive.elevation_end_m,
+        yaw_deg=(primitive.yaw_deg + 180.0) % 360.0,
+        category=primitive.category,
+        team=team,
+        footprint_xy=_center_symmetric(primitive.footprint_xy),
+        vertex_elevations_m=tuple(reversed(primitive.vertex_elevations_m)),
+    )
+
+
+def _paired_surfaces(
+    red: TerrainPrimitive,
+    *,
+    blue_name: str,
+) -> tuple[TerrainPrimitive, TerrainPrimitive]:
+    return red, _mirror_surface(red, name=blue_name, team=1)
+
+
+def polygon_area(points: tuple[tuple[float, float], ...]) -> float:
+    """Return the signed area of a simple 2D polygon."""
+
+    return 0.5 * sum(
+        x_0 * y_1 - x_1 * y_0
+        for (x_0, y_0), (x_1, y_1) in zip(points, points[1:] + points[:1], strict=True)
+    )
+
+
+def _point_in_triangle(
+    point: tuple[float, float],
+    triangle: tuple[tuple[float, float], tuple[float, float], tuple[float, float]],
+) -> bool:
+    signs = []
+    for start, end in zip(triangle, triangle[1:] + triangle[:1], strict=True):
+        signs.append(
+            (end[0] - start[0]) * (point[1] - start[1])
+            - (end[1] - start[1]) * (point[0] - start[0])
+        )
+    return min(signs) >= -1.0e-9
+
+
+def triangulate_polygon(
+    points: tuple[tuple[float, float], ...],
+) -> tuple[tuple[int, int, int], ...]:
+    """Triangulate a simple polygon with deterministic ear clipping."""
+
+    if len(points) < 3:
+        raise ValueError("terrain footprint must have at least three points")
+    remaining = list(range(len(points)))
+    if polygon_area(points) < 0:
+        remaining.reverse()
+    triangles: list[tuple[int, int, int]] = []
+    while len(remaining) > 3:
+        clipped = False
+        for cursor, current in enumerate(remaining):
+            previous = remaining[cursor - 1]
+            following = remaining[(cursor + 1) % len(remaining)]
+            a = points[previous]
+            b = points[current]
+            c = points[following]
+            cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])
+            if cross <= 1.0e-9:
+                continue
+            triangle = (a, b, c)
+            if any(
+                _point_in_triangle(points[index], triangle)
+                for index in remaining
+                if index not in (previous, current, following)
+            ):
+                continue
+            triangles.append((previous, current, following))
+            del remaining[cursor]
+            clipped = True
+            break
+        if not clipped:
+            raise ValueError("terrain footprint is not a simple polygon")
+    triangles.append((remaining[0], remaining[1], remaining[2]))
+    return tuple(triangles)
 
 
 _CENTRAL_HIGHLAND_FOOTPRINT = (
@@ -109,6 +232,122 @@ _RED_FORTRESS_FOOTPRINT = (
     (-7.96, 0.9695),
 )
 
+# Figure 4-27 identifies two 10.5 degree connectors between the 200mm edge
+# level and 350mm main deck. Their inset follows the published angle; the
+# global edge assignment is a diagram-derived [SIM] choice.
+_CENTRAL_CONNECTOR_RUN_M = (0.35 - 0.20) / math.tan(math.radians(10.5))
+_CENTRAL_LOW_RED = _CENTRAL_HIGHLAND_FOOTPRINT[1:3]
+_CENTRAL_LOW_BLUE = _CENTRAL_HIGHLAND_FOOTPRINT[4:6]
+_CENTRAL_HIGH_RED = _inset_edge(*_CENTRAL_LOW_RED, _CENTRAL_CONNECTOR_RUN_M)
+_CENTRAL_HIGH_BLUE = _inset_edge(*_CENTRAL_LOW_BLUE, _CENTRAL_CONNECTOR_RUN_M)
+_CENTRAL_PLATEAU_FOOTPRINT = (
+    _CENTRAL_HIGHLAND_FOOTPRINT[0],
+    _CENTRAL_HIGH_RED[0],
+    _CENTRAL_HIGH_RED[1],
+    _CENTRAL_HIGHLAND_FOOTPRINT[3],
+    _CENTRAL_HIGH_BLUE[0],
+    _CENTRAL_HIGH_BLUE[1],
+)
+_CENTRAL_RED_CONNECTOR_FOOTPRINT = (
+    _CENTRAL_LOW_RED[0],
+    _CENTRAL_LOW_RED[1],
+    _CENTRAL_HIGH_RED[1],
+    _CENTRAL_HIGH_RED[0],
+)
+_CENTRAL_BLUE_CONNECTOR_FOOTPRINT = (
+    _CENTRAL_LOW_BLUE[0],
+    _CENTRAL_LOW_BLUE[1],
+    _CENTRAL_HIGH_BLUE[1],
+    _CENTRAL_HIGH_BLUE[0],
+)
+
+# Figure 4-26 establishes 200--400mm surfaces and 23/43 degree transitions.
+# The exact global patch boundaries are not independently dimensioned in
+# figure 4-5, so these plan placements remain [SIM] while their elevations,
+# slope angles, and footprint envelope follow the official detail.
+_RED_TRAPEZOID_350_TOP = (
+    (-3.737, 6.40),
+    (-0.30, 6.40),
+    (-0.30, 7.40),
+    (-3.737, 7.40),
+)
+_RED_TRAPEZOID_23_RAMP = (
+    (-4.090, 6.40),
+    (-3.737, 6.40),
+    (-3.737, 7.40),
+    (-4.090, 7.40),
+)
+_RED_TRAPEZOID_400_TOP = (
+    (-10.65, 3.17),
+    (-9.50, 3.17),
+    (-9.50, 4.37),
+    (-10.65, 4.37),
+)
+_TRAPEZOID_43_RUN_M = (0.40 - 0.20) / math.tan(math.radians(43.0))
+_RED_TRAPEZOID_43_RAMP = (
+    (-9.50, 3.17),
+    (-9.50 + _TRAPEZOID_43_RUN_M, 3.17),
+    (-9.50 + _TRAPEZOID_43_RUN_M, 4.37),
+    (-9.50, 4.37),
+)
+
+
+def _fortress_surfaces(
+    *,
+    prefix: str,
+    team: int,
+    center_xy: tuple[float, float],
+    outer: tuple[tuple[float, float], ...],
+) -> tuple[TerrainPrimitive, ...]:
+    inner = _scale_polygon(outer, center_xy, 0.653 / 1.120)
+    surfaces: list[TerrainPrimitive] = [
+        TerrainPrimitive(
+            f"{prefix}_fortress",
+            center_xy,
+            (2.240, 1.939),
+            0.0,
+            0.0,
+            category="fortress",
+            team=team,
+            footprint_xy=outer,
+        )
+    ]
+    for index, (outer_start, outer_end, inner_start, inner_end) in enumerate(
+        zip(
+            outer,
+            outer[1:] + outer[:1],
+            inner,
+            inner[1:] + inner[:1],
+            strict=True,
+        )
+    ):
+        surfaces.append(
+            TerrainPrimitive(
+                f"{prefix}_fortress_slope_{index}",
+                center_xy,
+                (2.240, 1.939),
+                0.0,
+                0.15,
+                category="fortress_slope",
+                team=team,
+                footprint_xy=(outer_start, outer_end, inner_end, inner_start),
+                vertex_elevations_m=(0.0, 0.0, 0.15, 0.15),
+            )
+        )
+    surfaces.append(
+        TerrainPrimitive(
+            f"{prefix}_fortress_top",
+            center_xy,
+            (1.306, 1.131),
+            0.15,
+            0.15,
+            category="fortress_top",
+            team=team,
+            footprint_xy=inner,
+        )
+    )
+    return tuple(surfaces)
+
 
 DEFAULT_TERRAIN: tuple[TerrainPrimitive, ...] = (
     # Public-road regions are at field height. Their plan footprint follows
@@ -135,13 +374,14 @@ DEFAULT_TERRAIN: tuple[TerrainPrimitive, ...] = (
         footprint_xy=_center_symmetric(_RED_ROAD_FOOTPRINT),
     ),
     # Figure 4-26 gives an irregular 10.505m x 4.380m footprint, 200--400mm
-    # height, and 23/43 degree faces. Phase 1 uses the 300mm median surface.
+    # surfaces, and 23/43 degree faces. The base, two tops, and their slope
+    # patches preserve those published levels instead of flattening to 300mm.
     TerrainPrimitive(
         "red_trapezoid_highland",
         (-5.55, 5.21),
         (10.505, 4.380),
-        0.30,
-        0.30,
+        0.20,
+        0.20,
         category="trapezoid",
         team=0,
         footprint_xy=_RED_TRAPEZOID_FOOTPRINT,
@@ -150,23 +390,109 @@ DEFAULT_TERRAIN: tuple[TerrainPrimitive, ...] = (
         "blue_trapezoid_highland",
         (5.55, -5.21),
         (10.505, 4.380),
-        0.30,
-        0.30,
+        0.20,
+        0.20,
         yaw_deg=180.0,
         category="trapezoid",
         team=1,
         footprint_xy=_center_symmetric(_RED_TRAPEZOID_FOOTPRINT),
     ),
+    *_paired_surfaces(
+        TerrainPrimitive(
+            "red_trapezoid_350_top",
+            (-2.0185, 6.90),
+            (3.437, 1.0),
+            0.35,
+            0.35,
+            category="trapezoid_top",
+            team=0,
+            footprint_xy=_RED_TRAPEZOID_350_TOP,
+        ),
+        blue_name="blue_trapezoid_350_top",
+    ),
+    *_paired_surfaces(
+        TerrainPrimitive(
+            "red_trapezoid_23_ramp",
+            (-3.9135, 6.90),
+            (0.353, 1.0),
+            0.20,
+            0.35,
+            category="trapezoid_slope",
+            team=0,
+            footprint_xy=_RED_TRAPEZOID_23_RAMP,
+            vertex_elevations_m=(0.20, 0.35, 0.35, 0.20),
+        ),
+        blue_name="blue_trapezoid_23_ramp",
+    ),
+    *_paired_surfaces(
+        TerrainPrimitive(
+            "red_trapezoid_400_top",
+            (-10.075, 3.77),
+            (1.15, 1.20),
+            0.40,
+            0.40,
+            category="trapezoid_top",
+            team=0,
+            footprint_xy=_RED_TRAPEZOID_400_TOP,
+        ),
+        blue_name="blue_trapezoid_400_top",
+    ),
+    *_paired_surfaces(
+        TerrainPrimitive(
+            "red_trapezoid_43_ramp",
+            (-9.50 + _TRAPEZOID_43_RUN_M / 2, 3.77),
+            (_TRAPEZOID_43_RUN_M, 1.20),
+            0.20,
+            0.40,
+            category="trapezoid_slope",
+            team=0,
+            footprint_xy=_RED_TRAPEZOID_43_RAMP,
+            vertex_elevations_m=(0.40, 0.20, 0.20, 0.40),
+        ),
+        blue_name="blue_trapezoid_43_ramp",
+    ),
     # Figure 4-27 publishes the 7.700m x 10.820m envelope. Its skewed,
-    # center-symmetric outline replaces the old rectangular approximation.
+    # center-symmetric outline contains a 200mm edge surface, a 350mm main
+    # deck, and two 10.5 degree connector patches.
     TerrainPrimitive(
         "central_highland",
         (0.0, 0.0),
         (7.7, 10.82),
-        0.35,
-        0.35,
+        0.20,
+        0.20,
         category="central",
         footprint_xy=_CENTRAL_HIGHLAND_FOOTPRINT,
+    ),
+    TerrainPrimitive(
+        "central_plateau",
+        (0.0, 0.0),
+        (7.7, 10.82),
+        0.35,
+        0.35,
+        category="central_top",
+        footprint_xy=_CENTRAL_PLATEAU_FOOTPRINT,
+    ),
+    TerrainPrimitive(
+        "central_red_connector",
+        (2.35, -3.805),
+        (4.0, _CENTRAL_CONNECTOR_RUN_M),
+        0.20,
+        0.35,
+        category="central_slope",
+        team=0,
+        footprint_xy=_CENTRAL_RED_CONNECTOR_FOOTPRINT,
+        vertex_elevations_m=(0.20, 0.20, 0.35, 0.35),
+    ),
+    TerrainPrimitive(
+        "central_blue_connector",
+        (-2.35, 3.805),
+        (4.0, _CENTRAL_CONNECTOR_RUN_M),
+        0.20,
+        0.35,
+        category="central_slope",
+        team=1,
+        footprint_xy=_CENTRAL_BLUE_CONNECTOR_FOOTPRINT,
+        vertex_elevations_m=(0.20, 0.20, 0.35, 0.35),
     ),
     # Figures 4-28 and 4-29 place the two assembly areas below the energy
     # mechanism at field center. They are overlays on the central highland.
@@ -232,28 +558,18 @@ DEFAULT_TERRAIN: tuple[TerrainPrimitive, ...] = (
         category="rough",
         team=1,
     ),
-    # Figure 4-25: a regular hexagonal 20 degree platform with 1.120m side,
-    # 1.939m height across flats, and a 150mm top elevation.
-    TerrainPrimitive(
-        "red_fortress",
-        RED_FORTRESS_CENTER_XY,
-        (2.240, 1.939),
-        0.15,
-        0.15,
-        category="fortress",
+    # Figure 4-25: a 150mm flat inner hex surrounded by six 20 degree faces.
+    *_fortress_surfaces(
+        prefix="red",
         team=0,
-        footprint_xy=_RED_FORTRESS_FOOTPRINT,
+        center_xy=RED_FORTRESS_CENTER_XY,
+        outer=_RED_FORTRESS_FOOTPRINT,
     ),
-    TerrainPrimitive(
-        "blue_fortress",
-        BLUE_FORTRESS_CENTER_XY,
-        (2.240, 1.939),
-        0.15,
-        0.15,
-        yaw_deg=180.0,
-        category="fortress",
+    *_fortress_surfaces(
+        prefix="blue",
         team=1,
-        footprint_xy=_center_symmetric(_RED_FORTRESS_FOOTPRINT),
+        center_xy=BLUE_FORTRESS_CENTER_XY,
+        outer=_center_symmetric(_RED_FORTRESS_FOOTPRINT),
     ),
     # Figure 4-34 publishes the 0.700m opening and 0.800m roof width but not
     # a standalone global center dimension. The plan placement remains [SIM].
@@ -306,6 +622,14 @@ class ArenaGeometry:
 
     def __init__(self, config: ArenaConfig | None = None) -> None:
         self.config = config or ArenaConfig()
+        for primitive in self.config.terrain:
+            if primitive.vertex_elevations_m and (
+                not primitive.footprint_xy
+                or len(primitive.vertex_elevations_m) != len(primitive.footprint_xy)
+            ):
+                raise ValueError(
+                    f"{primitive.name}: vertex elevations must match the polygon footprint"
+                )
         self._obstacle_cache: dict[tuple[str, torch.dtype], Tensor] = {}
         self._terrain_cache: dict[
             tuple[str, torch.dtype],
@@ -570,8 +894,19 @@ class ArenaGeometry:
         x = position_xy[..., 0]
         y = position_xy[..., 1]
         previous = polygon_xy[-1]
-        epsilon = torch.finfo(position_xy.dtype).eps
+        epsilon = torch.finfo(position_xy.dtype).eps * 32
+        on_edge = torch.zeros_like(inside)
         for current in polygon_xy:
+            edge_x_delta = previous[0] - current[0]
+            edge_y_delta = previous[1] - current[1]
+            cross = edge_x_delta * (y - current[1]) - edge_y_delta * (x - current[0])
+            within_segment = (x - current[0]) * (x - previous[0]) + (y - current[1]) * (
+                y - previous[1]
+            ) <= epsilon
+            on_edge |= (
+                torch.abs(cross)
+                <= epsilon * (torch.abs(edge_x_delta) + torch.abs(edge_y_delta) + 1.0)
+            ) & within_segment
             crosses_y = (current[1] > y) != (previous[1] > y)
             denominator = previous[1] - current[1]
             denominator = torch.where(
@@ -582,23 +917,76 @@ class ArenaGeometry:
             edge_x = (previous[0] - current[0]) * (y - current[1]) / denominator + current[0]
             inside ^= crosses_y & (x < edge_x)
             previous = current
-        return inside
+        return inside | on_edge
 
-    def _terrain_height_analytic(self, position_xy: Tensor) -> Tensor:
+    def field_height(self, position_xy: Tensor) -> Tensor:
+        """Return the manual-specified 1--2 degree field crown."""
+
         edge_distance = torch.clamp(
             self.config.field_width_m / 2 - torch.abs(position_xy[..., 1]),
             min=0.0,
         )
-        crown = edge_distance * torch.tan(
+        return edge_distance * torch.tan(
             torch.tensor(
                 self.config.field_crown_slope_deg * torch.pi / 180.0,
                 device=position_xy.device,
                 dtype=position_xy.dtype,
             )
         )
-        height = crown
+
+    @staticmethod
+    def _polygon_vertex_elevation(
+        position_xy: Tensor,
+        primitive: TerrainPrimitive,
+        polygon_xy: Tensor,
+    ) -> Tensor:
+        """Interpolate a polygonal surface from its triangulated vertices."""
+
+        vertex_height = torch.tensor(
+            primitive.vertex_elevations_m,
+            device=position_xy.device,
+            dtype=position_xy.dtype,
+        )
+        elevation = torch.full(
+            position_xy.shape[:-1],
+            primitive.elevation_start_m,
+            device=position_xy.device,
+            dtype=position_xy.dtype,
+        )
+        epsilon = torch.finfo(position_xy.dtype).eps * 16
+        for a_index, b_index, c_index in triangulate_polygon(primitive.footprint_xy):
+            a = polygon_xy[a_index]
+            b = polygon_xy[b_index]
+            c = polygon_xy[c_index]
+            denominator = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1])
+            weight_a = (
+                (b[1] - c[1]) * (position_xy[..., 0] - c[0])
+                + (c[0] - b[0]) * (position_xy[..., 1] - c[1])
+            ) / denominator
+            weight_b = (
+                (c[1] - a[1]) * (position_xy[..., 0] - c[0])
+                + (a[0] - c[0]) * (position_xy[..., 1] - c[1])
+            ) / denominator
+            weight_c = 1.0 - weight_a - weight_b
+            inside = (weight_a >= -epsilon) & (weight_b >= -epsilon) & (weight_c >= -epsilon)
+            interpolated = (
+                weight_a * vertex_height[a_index]
+                + weight_b * vertex_height[b_index]
+                + weight_c * vertex_height[c_index]
+            )
+            elevation = torch.where(inside, interpolated, elevation)
+        return elevation
+
+    def terrain_elevation(self, position_xy: Tensor) -> Tensor:
+        """Return structural elevation above the local crowned field."""
+
+        elevation_height = torch.zeros(
+            position_xy.shape[:-1],
+            device=position_xy.device,
+            dtype=position_xy.dtype,
+        )
         if not self.config.terrain:
-            return height
+            return elevation_height
         centers, sizes, cosine, sine, start, end = self._terrain_tensors(
             device=position_xy.device,
             dtype=position_xy.dtype,
@@ -620,22 +1008,32 @@ class ArenaGeometry:
                 inside = (torch.abs(local_x) <= sizes[index, 0] / 2) & (
                     torch.abs(local_y) <= sizes[index, 1] / 2
                 )
-            fraction = torch.clamp(
-                local_x / sizes[index, 0] + 0.5,
-                min=0.0,
-                max=1.0,
-            )
-            elevation = start[index] + fraction * (end[index] - start[index])
+            if primitive.vertex_elevations_m:
+                elevation = self._polygon_vertex_elevation(
+                    position_xy,
+                    primitive,
+                    polygon,
+                )
+            else:
+                fraction = torch.clamp(
+                    local_x / sizes[index, 0] + 0.5,
+                    min=0.0,
+                    max=1.0,
+                )
+                elevation = start[index] + fraction * (end[index] - start[index])
             if primitive.category == "rough":
                 # Figure 4-36 specifies 70mm bumps at 240mm pitch. A cosine
                 # profile is the Phase 1 differentiable [SIM] approximation.
                 elevation = elevation + 0.035 * (1.0 + torch.cos(2.0 * math.pi * local_x / 0.240))
-            height = torch.where(
+            elevation_height = torch.where(
                 inside,
-                torch.maximum(height, crown + elevation),
-                height,
+                torch.maximum(elevation_height, elevation),
+                elevation_height,
             )
-        return height
+        return elevation_height
+
+    def _terrain_height_analytic(self, position_xy: Tensor) -> Tensor:
+        return self.field_height(position_xy) + self.terrain_elevation(position_xy)
 
     def _terrain_height_grid(
         self,

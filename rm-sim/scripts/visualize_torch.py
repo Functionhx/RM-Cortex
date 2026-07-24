@@ -25,35 +25,41 @@ from rm_world.geometry import resolve_target_slots
 ROLE_LABELS = ("H", "E", "I3", "I4", "A", "S", "B", "O")
 RED = (255, 58, 83)
 BLUE = (20, 136, 255)
-CANVAS = (1120, 650)
+CANVAS = (1120, 700)
 MARGIN_X = 44
 MARGIN_TOP = 74
-MARGIN_BOTTOM = 42
-TERRAIN_COLORS = {
-    "central": (73, 87, 96),
-    "assembly": (83, 94, 101),
-    "trapezoid": (68, 82, 90),
-    "ramp": (92, 103, 109),
-    "road": (57, 72, 80),
-    "fly_ramp": (101, 108, 108),
-    "rough": (50, 64, 72),
-    "fortress": (88, 96, 98),
-    "tunnel": (8, 18, 24),
-}
+MARGIN_BOTTOM = 92
+HEIGHT_STOPS = (
+    (0.00, (14, 35, 46)),
+    (0.15, (51, 78, 84)),
+    (0.20, (67, 94, 99)),
+    (0.30, (87, 116, 119)),
+    (0.35, (108, 137, 139)),
+    (0.40, (132, 158, 159)),
+    (0.55, (180, 194, 192)),
+)
 FEATURE_LABELS = {
-    "central_highland": "CENTRAL HIGH · 7.70×10.82m",
+    "central_highland": "CENTRAL HIGH · 0.20–0.35m · 10.5°",
     "red_trapezoid_highland": "TRAPEZOID · 23°/43°",
     "blue_trapezoid_highland": "TRAPEZOID · 23°/43°",
     "red_road": "ROAD · 11°/15°",
     "blue_road": "ROAD · 11°/15°",
-    "red_fly_ramp": "FLY RAMP · 17°",
-    "blue_fly_ramp": "FLY RAMP · 17°",
     "red_rough_road": "BUMPS · 70/240mm",
     "blue_rough_road": "BUMPS · 70/240mm",
     "red_fortress": "FORT · 20°",
     "blue_fortress": "FORT · 20°",
     "red_tunnel": "TUNNEL",
     "blue_tunnel": "TUNNEL",
+}
+SLOPE_LABELS = {
+    "red_trapezoid_23_ramp": "23°",
+    "blue_trapezoid_23_ramp": "23°",
+    "red_trapezoid_43_ramp": "43°",
+    "blue_trapezoid_43_ramp": "43°",
+    "central_red_connector": "10.5°",
+    "central_blue_connector": "10.5°",
+    "red_fly_ramp": "FLY · 17°",
+    "blue_fly_ramp": "FLY · 17°",
 }
 
 
@@ -122,13 +128,227 @@ def _regular_polygon(
     ]
 
 
-def _draw_static(draw: object, arena: object, label_font: object) -> None:
+def _height_color(elevation_m: float) -> tuple[int, int, int]:
+    elevation_m = max(0.0, min(elevation_m, HEIGHT_STOPS[-1][0]))
+    for (low_height, low_color), (high_height, high_color) in zip(
+        HEIGHT_STOPS,
+        HEIGHT_STOPS[1:],
+        strict=True,
+    ):
+        if elevation_m <= high_height:
+            span = high_height - low_height
+            blend = (elevation_m - low_height) / span
+            return tuple(
+                round(low + blend * (high - low))
+                for low, high in zip(low_color, high_color, strict=True)
+            )
+    return HEIGHT_STOPS[-1][1]
+
+
+def _rectangle_points(
+    center_xy: tuple[float, float],
+    size_xy: tuple[float, float],
+    yaw_deg: float,
+) -> list[tuple[int, int]]:
+    half_x = size_xy[0] / 2
+    half_y = size_xy[1] / 2
+    angle = math.radians(yaw_deg)
+    cosine = math.cos(angle)
+    sine = math.sin(angle)
+    return [
+        _to_pixel(
+            center_xy[0] + cosine * x - sine * y,
+            center_xy[1] + sine * x + cosine * y,
+        )
+        for x, y in (
+            (-half_x, -half_y),
+            (half_x, -half_y),
+            (half_x, half_y),
+            (-half_x, half_y),
+        )
+    ]
+
+
+def _terrain_points(arena: object, primitive: object) -> list[tuple[int, int]]:
+    corners = arena.terrain_corners(
+        primitive,
+        device="cpu",
+        dtype=torch.float32,
+    )
+    return [_to_pixel(float(point[0]), float(point[1])) for point in corners]
+
+
+def _render_elevation_layer(image: object, arena: object) -> None:
+    from PIL import Image, ImageDraw
+
+    left, top = _to_pixel(-14.0, 7.5)
+    right, bottom = _to_pixel(14.0, -7.5)
+    field_size = (right - left + 1, bottom - top + 1)
+    sample_size = (field_size[0] // 2, field_size[1] // 2)
+    x = torch.linspace(-14.0, 14.0, sample_size[0])
+    y = torch.linspace(7.5, -7.5, sample_size[1])
+    yy, xx = torch.meshgrid(y, x, indexing="ij")
+    position = torch.stack((xx, yy), dim=-1)
+    elevation = arena.terrain_elevation(position)
+    crown = arena.field_height(position)
+    max_crown = 7.5 * math.tan(math.radians(arena.config.field_crown_slope_deg))
+    pixels = []
+    for height, crown_height in zip(
+        elevation.reshape(-1).tolist(),
+        crown.reshape(-1).tolist(),
+        strict=True,
+    ):
+        if height < 0.012:
+            crown_lift = round(8 * crown_height / max(max_crown, 1.0e-6))
+            pixels.append(tuple(channel + crown_lift for channel in HEIGHT_STOPS[0][1]))
+        else:
+            band_height = round(height / 0.05) * 0.05
+            pixels.append(_height_color(band_height))
+    terrain_layer = Image.new("RGB", sample_size)
+    terrain_layer.putdata(pixels)
+    terrain_layer = terrain_layer.resize(field_size, Image.Resampling.NEAREST)
+    mask = Image.new("L", field_size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (0, 0, field_size[0] - 1, field_size[1] - 1),
+        radius=8,
+        fill=255,
+    )
+    image.paste(terrain_layer, (left, top), mask)
+
+
+def _draw_slope_arrow(
+    draw: object,
+    primitive: object,
+    label: str,
+    label_font: object,
+) -> None:
+    if primitive.vertex_elevations_m:
+        minimum = min(primitive.vertex_elevations_m)
+        maximum = max(primitive.vertex_elevations_m)
+        low_vertices = [
+            point
+            for point, height in zip(
+                primitive.footprint_xy,
+                primitive.vertex_elevations_m,
+                strict=True,
+            )
+            if abs(height - minimum) < 1.0e-6
+        ]
+        high_vertices = [
+            point
+            for point, height in zip(
+                primitive.footprint_xy,
+                primitive.vertex_elevations_m,
+                strict=True,
+            )
+            if abs(height - maximum) < 1.0e-6
+        ]
+        low_xy = (
+            sum(point[0] for point in low_vertices) / len(low_vertices),
+            sum(point[1] for point in low_vertices) / len(low_vertices),
+        )
+        high_xy = (
+            sum(point[0] for point in high_vertices) / len(high_vertices),
+            sum(point[1] for point in high_vertices) / len(high_vertices),
+        )
+    else:
+        direction = (
+            math.cos(math.radians(primitive.yaw_deg)),
+            math.sin(math.radians(primitive.yaw_deg)),
+        )
+        half_arrow = primitive.size_xy[0] * 0.31
+        low_xy = (
+            primitive.center_xy[0] - direction[0] * half_arrow,
+            primitive.center_xy[1] - direction[1] * half_arrow,
+        )
+        high_xy = (
+            primitive.center_xy[0] + direction[0] * half_arrow,
+            primitive.center_xy[1] + direction[1] * half_arrow,
+        )
+        if primitive.elevation_start_m > primitive.elevation_end_m:
+            low_xy, high_xy = high_xy, low_xy
+    low = _to_pixel(*low_xy)
+    high = _to_pixel(*high_xy)
+    draw.line((*low, *high), fill=(239, 245, 245), width=2)
+    dx = high[0] - low[0]
+    dy = high[1] - low[1]
+    length = max(math.hypot(dx, dy), 1.0)
+    unit = (dx / length, dy / length)
+    normal = (-unit[1], unit[0])
+    arrow = (
+        high,
+        (
+            round(high[0] - unit[0] * 7 + normal[0] * 4),
+            round(high[1] - unit[1] * 7 + normal[1] * 4),
+        ),
+        (
+            round(high[0] - unit[0] * 7 - normal[0] * 4),
+            round(high[1] - unit[1] * 7 - normal[1] * 4),
+        ),
+    )
+    draw.polygon(arrow, fill=(239, 245, 245))
+    midpoint = ((low[0] + high[0]) // 2, (low[1] + high[1]) // 2 - 7)
+    draw.text(
+        midpoint,
+        label,
+        fill=(239, 245, 245),
+        font=label_font,
+        anchor="mm",
+        stroke_width=2,
+        stroke_fill=(18, 28, 33),
+    )
+
+
+def _draw_height_legend(draw: object, legend_font: object) -> None:
+    levels = (0.00, 0.15, 0.20, 0.30, 0.35, 0.40, 0.55)
+    start_x = 338
+    y = CANVAS[1] - 73
+    draw.text(
+        (start_x - 12, y + 6),
+        "HEIGHT ABOVE LOCAL FIELD",
+        fill=(139, 159, 168),
+        font=legend_font,
+        anchor="ra",
+    )
+    x = start_x
+    for level in levels:
+        draw.rectangle(
+            (x, y, x + 22, y + 12),
+            fill=_height_color(level),
+            outline=(172, 188, 194),
+        )
+        draw.text(
+            (x + 26, y + 6),
+            f"{level:.2f}",
+            fill=(172, 188, 194),
+            font=legend_font,
+            anchor="lm",
+        )
+        x += 93 if level < 0.10 else 99
+    draw.text(
+        (CANVAS[0] - MARGIN_X, y + 6),
+        "m",
+        fill=(172, 188, 194),
+        font=legend_font,
+        anchor="rm",
+    )
+
+
+def _draw_static(
+    image: object,
+    arena: object,
+    label_font: object,
+    legend_font: object,
+) -> None:
+    from PIL import ImageDraw
+
+    _render_elevation_layer(image, arena)
+    draw = ImageDraw.Draw(image)
     left, top = _to_pixel(-14.0, 7.5)
     right, bottom = _to_pixel(14.0, -7.5)
     draw.rounded_rectangle(
         (left, top, right, bottom),
         radius=8,
-        fill=(14, 35, 46),
         outline=(205, 222, 232),
         width=2,
     )
@@ -141,20 +361,52 @@ def _draw_static(draw: object, arena: object, label_font: object) -> None:
     draw.line((*center_top, *center_bottom), fill=(142, 164, 176), width=2)
 
     for primitive in arena.config.terrain:
-        corners = arena.terrain_corners(
-            primitive,
-            device="cpu",
-            dtype=torch.float32,
-        )
-        points = [_to_pixel(float(point[0]), float(point[1])) for point in corners]
+        points = _terrain_points(arena, primitive)
         team_color = RED if primitive.team == Team.RED else BLUE
-        outline = (145, 158, 165) if primitive.team is None else team_color
-        draw.polygon(
-            points,
-            fill=TERRAIN_COLORS[primitive.category],
-            outline=outline,
+        primary_surface = primitive.name in FEATURE_LABELS or primitive.category == "assembly"
+        outline = (151, 168, 175) if primitive.team is None else team_color
+        maximum_height = max(
+            primitive.vertex_elevations_m
+            or (primitive.elevation_start_m, primitive.elevation_end_m)
         )
-        draw.line((*points, points[0]), fill=outline, width=2)
+        if maximum_height >= 0.12 and (
+            primary_surface
+            or primitive.category in {"central_top", "trapezoid_top", "fortress_top"}
+        ):
+            shadow = [(x + 2, y + 3) for x, y in points]
+            draw.line((*shadow, shadow[0]), fill=(4, 12, 17), width=4)
+        if primitive.category == "tunnel":
+            draw.polygon(points, fill=_height_color(0.10))
+            shoulder = _rectangle_points(
+                primitive.center_xy,
+                (primitive.size_xy[0] * 0.88, primitive.size_xy[1] * 0.78),
+                primitive.yaw_deg,
+            )
+            roof = _rectangle_points(
+                primitive.center_xy,
+                (primitive.size_xy[0] * 0.78, primitive.size_xy[1] * 0.66),
+                primitive.yaw_deg,
+            )
+            opening = _rectangle_points(
+                primitive.center_xy,
+                (primitive.size_xy[0] * 0.68, primitive.size_xy[1] * 0.34),
+                primitive.yaw_deg,
+            )
+            draw.polygon(shoulder, fill=_height_color(0.20))
+            draw.polygon(roof, fill=_height_color(0.25))
+            draw.polygon(opening, fill=(5, 15, 21))
+            draw.line((*opening, opening[0]), fill=(176, 190, 195), width=1)
+        line_width = 2 if primary_surface else 1
+        if primitive.category in {
+            "central_slope",
+            "trapezoid_slope",
+            "fortress_slope",
+            "central_top",
+            "trapezoid_top",
+            "fortress_top",
+        }:
+            outline = (188, 201, 204)
+        draw.line((*points, points[0]), fill=outline, width=line_width)
         if primitive.category == "rough":
             angle = math.radians(primitive.yaw_deg)
             along = (math.cos(angle), math.sin(angle))
@@ -162,7 +414,7 @@ def _draw_static(draw: object, arena: object, label_font: object) -> None:
             half_x = primitive.size_xy[0] / 2
             half_y = primitive.size_xy[1] / 2
             ridge = -half_x + 0.12
-            ridge_color = tuple(min(channel + 28, 255) for channel in outline)
+            ridge_index = 0
             while ridge < half_x:
                 center_x = primitive.center_xy[0] + along[0] * ridge
                 center_y = primitive.center_xy[1] + along[1] * ridge
@@ -177,23 +429,18 @@ def _draw_static(draw: object, arena: object, label_font: object) -> None:
                             center_y + across[1] * half_y,
                         ),
                     ),
-                    fill=ridge_color,
-                    width=1,
+                    fill=_height_color(0.07 if ridge_index % 2 == 0 else 0.04),
+                    width=2,
                 )
                 ridge += 0.24
-        if primitive.elevation_start_m != primitive.elevation_end_m:
-            angle = torch.deg2rad(torch.tensor(primitive.yaw_deg))
-            direction = torch.stack((torch.cos(angle), torch.sin(angle)))
-            low = torch.tensor(primitive.center_xy) - direction * primitive.size_xy[0] * 0.32
-            high = torch.tensor(primitive.center_xy) + direction * primitive.size_xy[0] * 0.32
-            draw.line(
-                (
-                    *_to_pixel(float(low[0]), float(low[1])),
-                    *_to_pixel(float(high[0]), float(high[1])),
-                ),
-                fill=(228, 235, 237),
-                width=2,
-            )
+                ridge_index += 1
+
+    for primitive in arena.config.terrain:
+        slope_label = SLOPE_LABELS.get(primitive.name)
+        if slope_label is not None:
+            _draw_slope_arrow(draw, primitive, slope_label, label_font)
+
+    for primitive in arena.config.terrain:
         label = FEATURE_LABELS.get(primitive.name)
         if label is not None:
             label_xy = primitive.center_xy
@@ -209,7 +456,6 @@ def _draw_static(draw: object, arena: object, label_font: object) -> None:
                 stroke_width=2,
                 stroke_fill=(22, 31, 36),
             )
-
     for team in (Team.RED, Team.BLUE):
         color = RED if team == Team.RED else BLUE
         base_center_tensor = arena.base_centers(
@@ -295,6 +541,17 @@ def _draw_static(draw: object, arena: object, label_font: object) -> None:
         stroke_width=2,
         stroke_fill=(22, 31, 36),
     )
+    for label_xy in ((-1.45, 0.45), (1.45, -0.45)):
+        draw.text(
+            _to_pixel(*label_xy),
+            "ASSEMBLY · 12°–45°",
+            fill=(226, 235, 237),
+            font=label_font,
+            anchor="mm",
+            stroke_width=2,
+            stroke_fill=(22, 31, 36),
+        )
+    _draw_height_legend(draw, legend_font)
 
 
 def main() -> None:
@@ -338,6 +595,8 @@ def main() -> None:
     unit_font = _font(12, bold=True)
     small_font = _font(11)
     terrain_font = _font(9, bold=True)
+    static_image = Image.new("RGB", CANVAS, (6, 15, 23))
+    _draw_static(static_image, environment.arena, terrain_font, small_font)
     trails: deque[torch.Tensor] = deque(maxlen=22)
     frames: list[object] = []
     radii_m = torch.where(
@@ -388,9 +647,8 @@ def main() -> None:
         weak = environment.game.weak[0].detach().cpu()
         trails.append(xy.clone())
 
-        image = Image.new("RGB", CANVAS, (6, 15, 23))
+        image = static_image.copy()
         draw = ImageDraw.Draw(image)
-        _draw_static(draw, environment.arena, terrain_font)
         draw.text((MARGIN_X, 18), "RM-CORTEX // TORCH ARENA", fill=(236, 246, 250), font=title_font)
         draw.text((MARGIN_X, 48), "RED", fill=RED, font=score_font)
         draw.text((CANVAS[0] - MARGIN_X, 48), "BLUE", fill=BLUE, font=score_font, anchor="ra")

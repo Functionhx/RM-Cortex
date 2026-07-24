@@ -42,7 +42,12 @@ from rm_referee.referee import Referee
 from rm_referee.schema import Role, Team, slot
 from rm_referee.state import GameState
 from rm_world.actions import WorldActions
-from rm_world.arena import ArenaGeometry, TerrainPrimitive
+from rm_world.arena import (
+    ArenaGeometry,
+    TerrainPrimitive,
+    polygon_area,
+    triangulate_polygon,
+)
 from rm_world.backend import TorchRuleBackend
 from rm_world.kinematics import KinematicConfig, KinematicState, KinematicWorld
 from rm_world.observations import ObservationBuilder
@@ -108,17 +113,15 @@ UNIT_HALF_HEIGHTS = (
     0.59,
     0.94,
 ) * constants.TEAM_COUNT
-TERRAIN_COLORS = {
-    "central": (0.24, 0.29, 0.32),
-    "assembly": (0.30, 0.34, 0.36),
-    "trapezoid": (0.22, 0.27, 0.30),
-    "ramp": (0.34, 0.38, 0.40),
-    "road": (0.19, 0.24, 0.27),
-    "fly_ramp": (0.38, 0.40, 0.40),
-    "rough": (0.16, 0.21, 0.24),
-    "fortress": (0.32, 0.35, 0.36),
-    "tunnel": (0.04, 0.07, 0.09),
-}
+HEIGHT_COLORS = (
+    (0.00, (0.10, 0.17, 0.20)),
+    (0.15, (0.20, 0.30, 0.32)),
+    (0.20, (0.27, 0.38, 0.40)),
+    (0.30, (0.36, 0.48, 0.49)),
+    (0.35, (0.44, 0.56, 0.56)),
+    (0.40, (0.54, 0.64, 0.64)),
+    (0.55, (0.72, 0.78, 0.77)),
+)
 
 
 def _quaternion_from_euler(
@@ -143,75 +146,13 @@ def _quaternion_from_euler(
 
 
 def _terrain_color(primitive: TerrainPrimitive) -> tuple[float, float, float]:
-    color = TERRAIN_COLORS[primitive.category]
-    if primitive.team == Team.RED:
-        return (min(color[0] + 0.12, 1.0), color[1], color[2])
-    if primitive.team == Team.BLUE:
-        return (color[0], color[1], min(color[2] + 0.16, 1.0))
-    return color
-
-
-def _polygon_area(points: tuple[tuple[float, float], ...]) -> float:
-    """Return the signed area of a simple 2D polygon."""
-
-    return 0.5 * sum(
-        x_0 * y_1 - x_1 * y_0
-        for (x_0, y_0), (x_1, y_1) in zip(points, points[1:] + points[:1], strict=True)
-    )
-
-
-def _point_in_triangle(
-    point: tuple[float, float],
-    triangle: tuple[tuple[float, float], tuple[float, float], tuple[float, float]],
-) -> bool:
-    """Return whether a point lies in or on a counter-clockwise triangle."""
-
-    signs = []
-    for start, end in zip(triangle, triangle[1:] + triangle[:1], strict=True):
-        signs.append(
-            (end[0] - start[0]) * (point[1] - start[1])
-            - (end[1] - start[1]) * (point[0] - start[0])
-        )
-    return min(signs) >= -1.0e-9
-
-
-def _triangulate_polygon(
-    points: tuple[tuple[float, float], ...],
-) -> list[tuple[int, int, int]]:
-    """Triangulate a simple polygon with deterministic ear clipping."""
-
-    if len(points) < 3:
-        raise ValueError("terrain footprint must have at least three points")
-    remaining = list(range(len(points)))
-    if _polygon_area(points) < 0:
-        remaining.reverse()
-    triangles: list[tuple[int, int, int]] = []
-    while len(remaining) > 3:
-        clipped = False
-        for cursor, current in enumerate(remaining):
-            previous = remaining[cursor - 1]
-            following = remaining[(cursor + 1) % len(remaining)]
-            a = points[previous]
-            b = points[current]
-            c = points[following]
-            cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])
-            if cross <= 1.0e-9:
-                continue
-            triangle = (a, b, c)
-            if any(
-                _point_in_triangle(points[index], triangle)
-                for index in remaining
-                if index not in (previous, current, following)
-            ):
-                continue
-            triangles.append((previous, current, following))
-            del remaining[cursor]
-            clipped = True
-            break
-        if not clipped:
-            raise ValueError("terrain footprint is not a simple polygon")
-    triangles.append(tuple(remaining))
-    return triangles
+    if primitive.category == "tunnel":
+        return (0.04, 0.07, 0.09)
+    if primitive.vertex_elevations_m:
+        elevation = sum(primitive.vertex_elevations_m) / len(primitive.vertex_elevations_m)
+    else:
+        elevation = (primitive.elevation_start_m + primitive.elevation_end_m) / 2
+    return min(HEIGHT_COLORS, key=lambda stop: abs(stop[0] - elevation))[1]
 
 
 def _polygon_prism_mesh(
@@ -221,14 +162,19 @@ def _polygon_prism_mesh(
     """Build an extruded mesh from the same footprint used by Torch geometry."""
 
     points = primitive.footprint_xy
-    triangles = _triangulate_polygon(points)
-    if _polygon_area(points) < 0:
+    triangles = triangulate_polygon(points)
+    if polygon_area(points) < 0:
         ordered = list(reversed(range(len(points))))
     else:
         ordered = list(range(len(points)))
     center_x, center_y = primitive.center_xy
-    bottom = [(x - center_x, y - center_y, 0.0) for x, y in points]
-    top = [(x - center_x, y - center_y, height_m) for x, y in points]
+    top_height = primitive.vertex_elevations_m or (height_m,) * len(points)
+    bottom_z = min(0.0, min(top_height) - 0.025)
+    bottom = [(x - center_x, y - center_y, bottom_z) for x, y in points]
+    top = [
+        (x - center_x, y - center_y, vertex_height)
+        for (x, y), vertex_height in zip(points, top_height, strict=True)
+    ]
     vertex_count = len(points)
     faces: list[tuple[int, int, int]] = []
     for a, b, c in triangles:
@@ -421,10 +367,51 @@ class RMCortexDirectMARLEnv(DirectMARLEnv):
                     orientation=_quaternion_from_euler(yaw=yaw),
                 )
                 continue
+            if primitive.category == "rough":
+                base_cfg = sim_utils.CuboidCfg(
+                    size=(*primitive.size_xy, 0.025),
+                    visual_material=sim_utils.PreviewSurfaceCfg(
+                        diffuse_color=_terrain_color(primitive),
+                        roughness=0.86,
+                    ),
+                )
+                base_cfg.func(
+                    f"/World/envs/env_0/Terrain_{primitive.name}",
+                    base_cfg,
+                    translation=(*primitive.center_xy, crown + 0.0125),
+                    orientation=_quaternion_from_euler(yaw=yaw),
+                )
+                direction = (math.cos(yaw), math.sin(yaw))
+                ridge_offset = -primitive.size_xy[0] / 2 + 0.12
+                ridge_index = 0
+                while ridge_offset < primitive.size_xy[0] / 2:
+                    ridge_cfg = sim_utils.CuboidCfg(
+                        size=(0.075, primitive.size_xy[1], 0.07),
+                        visual_material=sim_utils.PreviewSurfaceCfg(
+                            diffuse_color=HEIGHT_COLORS[1][1],
+                            roughness=0.82,
+                        ),
+                    )
+                    ridge_cfg.func(
+                        (f"/World/envs/env_0/Terrain_{primitive.name}_ridge_{ridge_index}"),
+                        ridge_cfg,
+                        translation=(
+                            primitive.center_xy[0] + direction[0] * ridge_offset,
+                            primitive.center_xy[1] + direction[1] * ridge_offset,
+                            crown + 0.035,
+                        ),
+                        orientation=_quaternion_from_euler(yaw=yaw),
+                    )
+                    ridge_offset += 0.24
+                    ridge_index += 1
+                continue
 
             elevation_delta = primitive.elevation_end_m - primitive.elevation_start_m
-            if primitive.footprint_xy and abs(elevation_delta) < 1.0e-6:
-                if primitive.category == "assembly":
+            if primitive.footprint_xy:
+                if primitive.vertex_elevations_m:
+                    height = max(primitive.vertex_elevations_m)
+                    base_z = crown
+                elif primitive.category == "assembly":
                     height = 0.012
                     base_z = crown + primitive.elevation_start_m
                 else:

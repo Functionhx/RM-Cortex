@@ -106,6 +106,72 @@ def test_rough_road_models_figure_4_36_bump_height_and_pitch() -> None:
     assert heights[0] - heights[1] == pytest.approx(0.070, abs=1.0e-5)
 
 
+def test_polygonal_slope_vertices_match_their_terrain_elevations() -> None:
+    arena = ArenaGeometry()
+    slope = next(
+        primitive for primitive in arena.config.terrain if primitive.name == "red_trapezoid_23_ramp"
+    )
+    samples = torch.tensor(slope.footprint_xy)
+
+    elevation = arena.terrain_elevation(samples)
+
+    assert elevation.tolist() == pytest.approx(slope.vertex_elevations_m, abs=1.0e-5)
+
+
+def test_fortress_uses_six_twenty_degree_faces_and_a_150mm_top() -> None:
+    arena = ArenaGeometry()
+    by_name = {primitive.name: primitive for primitive in arena.config.terrain}
+    slopes = [
+        primitive
+        for primitive in arena.config.terrain
+        if primitive.name.startswith("red_fortress_slope_")
+    ]
+    top = by_name["red_fortress_top"]
+    first_slope = slopes[0]
+    outer_midpoint = torch.tensor(first_slope.footprint_xy[:2]).mean(dim=0)
+    inner_midpoint = torch.tensor(first_slope.footprint_xy[2:]).mean(dim=0)
+    samples = torch.stack(
+        (
+            outer_midpoint,
+            (outer_midpoint + inner_midpoint) / 2,
+            inner_midpoint,
+            torch.tensor(top.center_xy),
+        )
+    )
+
+    elevation = arena.terrain_elevation(samples)
+
+    assert len(slopes) == 6
+    assert top.size_xy == pytest.approx((1.306, 1.131))
+    assert elevation.tolist() == pytest.approx((0.0, 0.075, 0.15, 0.15), abs=1.0e-5)
+
+
+def test_central_connectors_preserve_the_200_to_350mm_levels() -> None:
+    arena = ArenaGeometry()
+    connector = next(
+        primitive for primitive in arena.config.terrain if primitive.name == "central_red_connector"
+    )
+    low_midpoint = torch.tensor(connector.footprint_xy[:2]).mean(dim=0)
+    high_midpoint = torch.tensor(connector.footprint_xy[2:]).mean(dim=0)
+    samples = torch.stack(
+        (
+            low_midpoint,
+            (low_midpoint + high_midpoint) / 2,
+            high_midpoint,
+        )
+    )
+
+    elevation = arena.terrain_elevation(samples)
+
+    assert elevation.tolist() == pytest.approx((0.20, 0.275, 0.35), abs=1.0e-5)
+
+
+def test_every_vertex_elevation_matches_its_polygon_arity() -> None:
+    for primitive in ArenaGeometry().config.terrain:
+        if primitive.vertex_elevations_m:
+            assert len(primitive.vertex_elevations_m) == len(primitive.footprint_xy)
+
+
 def test_aerial_area_enforces_the_section_4_5_tether_envelope() -> None:
     arena = ArenaGeometry()
     red = torch.tensor(((-12.52, 5.68), (2.4, 4.0), (2.41, 4.0), (0.0, 2.9)))
