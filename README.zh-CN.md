@@ -70,7 +70,7 @@ PYTHONPATH=src /path/to/IsaacLab/isaaclab.sh \
   -p scripts/visualize_isaac.py --num-envs 1
 ```
 
-CUDA 仿真不可用或显存被占用时可追加 `--device cpu`。Isaac 场景运行同一战术控制器、同一组地形 primitive 与权威 Torch 比赛状态，不会引入第二套规则。除明确标注尺寸的模块外，其余地形位置仍是 Phase 1 `[SIM]` 近似，不是官方 CAD。
+CUDA 仿真不可用或显存被占用时可追加 `--device cpu`。Isaac 场景运行同一战术控制器、同一组多边形地形 footprint 与权威 Torch 比赛状态；非矩形 footprint 会确定性三角剖分为棱柱网格，而不是退化为外接矩形，也不会引入第二套规则。除明确标注尺寸的模块外，其余地形位置仍是 Phase 1 `[SIM]` 近似，不是官方 CAD。
 
 ## 设计原则
 

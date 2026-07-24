@@ -73,7 +73,7 @@ PYTHONPATH=src /path/to/IsaacLab/isaaclab.sh \
   -p scripts/visualize_isaac.py --num-envs 1
 ```
 
-Add `--device cpu` when CUDA simulation is unavailable or GPU memory is occupied. The Isaac scene runs the same tactical controller, terrain primitives, and authoritative Torch game state; it does not introduce a second gameplay state. Terrain placement beyond explicitly dimensioned modules remains a Phase 1 `[SIM]` approximation, not official CAD.
+Add `--device cpu` when CUDA simulation is unavailable or GPU memory is occupied. The Isaac scene runs the same tactical controller, polygonal terrain footprints, and authoritative Torch game state; non-rectangular footprints are deterministically triangulated into prism meshes rather than replaced by bounding boxes. It does not introduce a second gameplay state. Terrain placement beyond explicitly dimensioned modules remains a Phase 1 `[SIM]` approximation, not official CAD.
 
 ## Design principles
 

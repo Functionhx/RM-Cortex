@@ -11,7 +11,9 @@ from collections.abc import Sequence
 from dataclasses import fields
 import math
 
+import numpy as np
 import torch
+import trimesh
 
 import isaaclab.sim as sim_utils  # type: ignore[import-not-found]
 from isaaclab.envs import (  # type: ignore[import-not-found]
@@ -29,6 +31,7 @@ from isaaclab.sim.spawners.from_files import (  # type: ignore[import-not-found]
     GroundPlaneCfg,
     spawn_ground_plane,
 )
+from isaaclab.terrains.utils import create_prim_from_mesh  # type: ignore[import-not-found]
 from isaaclab.utils import configclass  # type: ignore[import-not-found]
 
 from rm_isaac.adapter import IsaacGeometryFrame, IsaacRuleAdapter
@@ -146,6 +149,100 @@ def _terrain_color(primitive: TerrainPrimitive) -> tuple[float, float, float]:
     if primitive.team == Team.BLUE:
         return (color[0], color[1], min(color[2] + 0.16, 1.0))
     return color
+
+
+def _polygon_area(points: tuple[tuple[float, float], ...]) -> float:
+    """Return the signed area of a simple 2D polygon."""
+
+    return 0.5 * sum(
+        x_0 * y_1 - x_1 * y_0
+        for (x_0, y_0), (x_1, y_1) in zip(points, points[1:] + points[:1], strict=True)
+    )
+
+
+def _point_in_triangle(
+    point: tuple[float, float],
+    triangle: tuple[tuple[float, float], tuple[float, float], tuple[float, float]],
+) -> bool:
+    """Return whether a point lies in or on a counter-clockwise triangle."""
+
+    signs = []
+    for start, end in zip(triangle, triangle[1:] + triangle[:1], strict=True):
+        signs.append(
+            (end[0] - start[0]) * (point[1] - start[1])
+            - (end[1] - start[1]) * (point[0] - start[0])
+        )
+    return min(signs) >= -1.0e-9
+
+
+def _triangulate_polygon(
+    points: tuple[tuple[float, float], ...],
+) -> list[tuple[int, int, int]]:
+    """Triangulate a simple polygon with deterministic ear clipping."""
+
+    if len(points) < 3:
+        raise ValueError("terrain footprint must have at least three points")
+    remaining = list(range(len(points)))
+    if _polygon_area(points) < 0:
+        remaining.reverse()
+    triangles: list[tuple[int, int, int]] = []
+    while len(remaining) > 3:
+        clipped = False
+        for cursor, current in enumerate(remaining):
+            previous = remaining[cursor - 1]
+            following = remaining[(cursor + 1) % len(remaining)]
+            a = points[previous]
+            b = points[current]
+            c = points[following]
+            cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])
+            if cross <= 1.0e-9:
+                continue
+            triangle = (a, b, c)
+            if any(
+                _point_in_triangle(points[index], triangle)
+                for index in remaining
+                if index not in (previous, current, following)
+            ):
+                continue
+            triangles.append((previous, current, following))
+            del remaining[cursor]
+            clipped = True
+            break
+        if not clipped:
+            raise ValueError("terrain footprint is not a simple polygon")
+    triangles.append(tuple(remaining))
+    return triangles
+
+
+def _polygon_prism_mesh(
+    primitive: TerrainPrimitive,
+    height_m: float,
+) -> trimesh.Trimesh:
+    """Build an extruded mesh from the same footprint used by Torch geometry."""
+
+    points = primitive.footprint_xy
+    triangles = _triangulate_polygon(points)
+    if _polygon_area(points) < 0:
+        ordered = list(reversed(range(len(points))))
+    else:
+        ordered = list(range(len(points)))
+    center_x, center_y = primitive.center_xy
+    bottom = [(x - center_x, y - center_y, 0.0) for x, y in points]
+    top = [(x - center_x, y - center_y, height_m) for x, y in points]
+    vertex_count = len(points)
+    faces: list[tuple[int, int, int]] = []
+    for a, b, c in triangles:
+        faces.append((c, b, a))
+        faces.append((vertex_count + a, vertex_count + b, vertex_count + c))
+    for cursor, current in enumerate(ordered):
+        following = ordered[(cursor + 1) % len(ordered)]
+        faces.append((current, following, vertex_count + following))
+        faces.append((current, vertex_count + following, vertex_count + current))
+    return trimesh.Trimesh(
+        vertices=np.asarray(bottom + top, dtype=np.float32),
+        faces=np.asarray(faces, dtype=np.int64),
+        process=False,
+    )
 
 
 def _unit_marker(role: int, team: int) -> object:
@@ -326,6 +423,24 @@ class RMCortexDirectMARLEnv(DirectMARLEnv):
                 continue
 
             elevation_delta = primitive.elevation_end_m - primitive.elevation_start_m
+            if primitive.footprint_xy and abs(elevation_delta) < 1.0e-6:
+                if primitive.category == "assembly":
+                    height = 0.012
+                    base_z = crown + primitive.elevation_start_m
+                else:
+                    height = max(primitive.elevation_start_m, 0.025)
+                    base_z = crown
+                create_prim_from_mesh(
+                    f"/World/envs/env_0/Terrain_{primitive.name}",
+                    _polygon_prism_mesh(primitive, height),
+                    translation=(*primitive.center_xy, base_z),
+                    visual_material=sim_utils.PreviewSurfaceCfg(
+                        diffuse_color=_terrain_color(primitive),
+                        roughness=0.72,
+                    ),
+                )
+                continue
+
             if abs(elevation_delta) < 1.0e-6:
                 height = max(primitive.elevation_start_m, 0.025)
                 size = (*primitive.size_xy, height)
