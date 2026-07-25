@@ -49,7 +49,7 @@ pytest -q
 python scripts/train.py --updates 1 --num-envs 8
 ```
 
-当前实现已经包含向量化裁判、带 LOS 与装甲几何的 2.5D Torch 场地、目标优先与分角色战术两类脚本基线、可安全选装的 Isaac Lab `DirectMARLEnv`，以及带信念状态实体注意力、集中式 critic、动作掩码、checkpoint 和评估流程的参数共享 MAPPO 基线。
+当前实现已经包含向量化裁判、带 LOS 与装甲几何的 2.5D Torch 场地、确定性脚本控制器、分层行为树基线、可安全选装的 Isaac Lab `DirectMARLEnv`，以及带信念状态实体注意力、集中式 critic、动作掩码、checkpoint 和评估流程的参数共享 MAPPO 基线。
 
 使用 `python scripts/benchmark_world.py --num-envs 1024 4096` 测量 Torch World 吞吐；在 Isaac Lab 启动环境中使用 `PYTHONPATH=src /path/to/IsaacLab/isaaclab.sh -p scripts/isaac_smoke.py --headless` 验证可选场景后端。
 
@@ -58,6 +58,47 @@ python scripts/train.py --updates 1 --num-envs 8
 Phase 1 训练默认对全部 16 个单位槽使用队伍共享的**信念观测**。Actor 接收每条轨迹的位置与速度估计、最近一次观测到的决策状态、分开记录的位置/状态时延、有物理上界的半正定协方差和信息来源。己方共享状态或本地视野会刷新完整轨迹；雷达上报只更新位置与速度，不会把陈旧的血量或弹药伪装成新信息；敌方离开观测范围后按恒速模型预测，不再暴露当前真值。在实验配置中设为 `"observation_mode": "oracle"` 可保留全信息性能上界，评估会自动沿用 checkpoint 保存的观测模式。
 
 雷达系统与场内前哨站不是同一个设施。按手册 5.6.6 节，准确/半准确上报会累积标记进度；敌方目标在 `P >= 100` 时显示确认位置，地面机器人在 `P >= 100/120` 时分别获得 15%/20% 易伤。雷达以绝对场地坐标按 5 Hz 策略步单次上报，策略也可明确选择不上报。实现还覆盖双倍易伤、干扰压制和激光反制空中机器人。MAPPO 当前只借用前哨站策略槽承载队伍级雷达指令，裁判层的雷达动作仍然是队伍级状态。
+
+## 分层行为树基线
+
+低层地面导航固定而不参与学习：纯 Torch 世界根据静态场地几何，在 `0.05 m` 网格上执行带缓存、确定性的 A*。其上由一棵全局树发布团队意图，再由八棵独立角色树——英雄、工程、两台步兵、空中、哨兵、基地和前哨站——选择高层任务与可审计叶节点。只有五个地面移动角色请求 A* 路径，空中与建筑角色保留各自执行逻辑；确定性执行器负责战斗、局部分离、经济、雷达和兵种规则动作。
+
+运行换边配对评估：
+
+```bash
+cd rm-sim
+python scripts/evaluate_behavior_tree.py \
+  --opponent tactical \
+  --seeds 1007 \
+  --device cpu
+```
+
+每个 seed 产生两条独立 leg，行为树控制器先执红方、再执蓝方。每条 leg 在比赛终局或官方 420 秒上限结束；`--max-policy-steps` 只用于显式截断冒烟，未完成对局会单独报告而不计作平局。双方控制器均读取完整 `GameState`/`KinematicState`，并可输出 MAPPO 尚未覆盖的完整 `WorldActions`。因此它是 **oracle/full-action 工程基线**，不是与信念策略公平对比的算法基准；下面的实现级 pilot 也不是正式胜率结论。
+
+使用 seeds `1007`、`2007`、`3007` 的实现级 pilot 已完成六条 420 秒换边 leg，A* 规划 `227/227` 成功。对 tactical controller 为 `3–3`（`balanced_score=0.5`），队伍平均累计回报为 `6.539`，对手为 `10.851`。这验证的是完整执行链路，不代表战术优于对手；样本量小且 seed 敏感，不能作为正式胜率。
+
+## RMUC 数据实验
+
+当前 CLI 保留首个取得授权的 1 Hz RMUC 数据实验，用于复现和诊断：
+
+```bash
+cd rm-sim
+python scripts/train_imitation.py \
+  --database /path/to/rmuc_region_dataset.sqlite \
+  --output-dir runs/rmuc_bc \
+  --fire-coefficient 0.5
+python scripts/train.py \
+  --pretrained-actor runs/rmuc_bc/best.pt \
+  --output-dir runs/phase1_bc_mappo
+```
+
+适配器强制以只读方式打开 SQLite；异常轨迹只做掩码，不裁剪、不前向填充，并在生成窗口前按完整队伍连通分量和比赛时间切分。当前三赛区数据自然形成南部训练、东部验证、北部锁定测试。离线输入与线上 34 维 actor、16×51 维信念实体契约一致：敌方真值必须先经过合成距离/LOS 感知和因果的“最后可见＋恒速预测”信念。
+
+这个诊断实验的标签是截断的未来 5 秒位移与区间射击事件，不是 0.2 秒动作、目标选择或行为树决策。迁移会复制共享编码器/actor body 与移动角色行；MAPPO 动作头和 critic MLP 参数保留初始化，但迁入的角色/队伍 embedding 也会改变 critic 的输入表征。离线数据仅保留 10 秒历史，也不同于线上从开局持续维护的 tracker。
+
+首轮使用 8,192/2,048 个窗口，射击权重为 `0.5`。验证集位移 RMSE 优于“原地不动”基线（`2.219 m` 对 `2.427 m`），但 MAE 更差（`1.458 m` 对 `1.368 m`）；射击 F1 为 `0.578`。在相同 seed 7、64 环境、50 次 MAPPO 更新下，seed 1007 的确定性红方单侧评估中，BC 初始化对脚本蓝方为 `0–64`、回报 `-3.672`，从头训练则为 `62–2`、`+23.546`。这项单 seed、单侧负迁移不能证明人类数据有害，只说明当前表征迁移目标未达到采用门槛。
+
+RMUC 人类数据的后续用途放在高层：学习团队任务、角色任务、可可靠推导的攻击目标，以及行为树叶节点/option 选择；固定 A* 继续承担低层导航。位移/射击实验只保留为负向消融，不再把仅导航的 PPO/BC 作为路线。默认模仿配置已关闭射击代理。
 
 ## 可视化
 
@@ -96,6 +137,9 @@ CUDA 仿真不可用或显存被占用时可追加 `--device cpu`。Isaac 场景
 - [x] 实现可复现的 PPO/MAPPO 训练与评估链路
 - [x] 用带时延和协方差的实体信念替换观测范围外的 actor 真值
 - [x] 在原生 Isaac Lab 无头运行时中完成场景验证
+- [x] 加入“全局＋八角色”行为树基线与 0.05 m A* 导航
+- [x] 加入只读 RMUC 适配器并复现首轮负迁移诊断
+- [ ] 使用授权比赛数据学习高层任务、目标与行为树叶节点选择
 - [ ] 发布完整规模基线训练指标
 - [ ] 使用比赛回放标定命中与观测模型
 
