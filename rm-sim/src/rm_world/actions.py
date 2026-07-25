@@ -121,3 +121,11 @@ class WorldActions:
             raise ValueError("target values must use the nine-class action schema")
         if self.radar_target.shape != env_team:
             raise ValueError("radar_target must have shape [env, team]")
+        if torch.any(self.radar_target < -1) or torch.any(
+            self.radar_target >= constants.UNIT_COUNT
+        ):
+            raise ValueError("radar_target must be -1 or a valid unit slot")
+        if self.radar_report_xy.shape != (*env_team, 2):
+            raise ValueError("radar_report_xy must have shape [env, team, 2]")
+        if not torch.all(torch.isfinite(self.radar_report_xy)):
+            raise ValueError("radar_report_xy must contain finite coordinates")

@@ -31,6 +31,7 @@ class MAPPOConfig:
     target_kl: float = 0.03
     hidden_dim: int = 128
     role_embedding_dim: int = 16
+    observation_mode: str = "belief"
     checkpoint_interval: int = 10
     output_dir: str = "runs/phase1_mappo"
 
@@ -59,6 +60,8 @@ class MAPPOConfig:
             raise ValueError("gamma and gae_lambda must be in [0, 1]")
         if self.learning_rate <= 0 or self.max_grad_norm <= 0:
             raise ValueError("learning_rate and max_grad_norm must be positive")
+        if self.observation_mode not in {"belief", "oracle"}:
+            raise ValueError("observation_mode must be 'belief' or 'oracle'")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

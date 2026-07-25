@@ -36,6 +36,7 @@ def evaluate_against_scripted(
     max_policy_steps: int = 2100,
     device: str = "cpu",
     seed: int = 17,
+    observation_mode: str = "belief",
 ) -> EvaluationReport:
     """Control red with MAPPO and blue with the deterministic opponent."""
 
@@ -47,6 +48,7 @@ def evaluate_against_scripted(
             device=device,
             seed=seed,
             validate_referee=False,
+            observation_mode=observation_mode,
         )
     )
     opponent = ScriptedOpponent()

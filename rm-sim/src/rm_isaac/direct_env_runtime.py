@@ -566,16 +566,11 @@ class RMCortexDirectMARLEnv(DirectMARLEnv):
             )
 
             radar = torch.clamp(actions[f"{prefix}_radar"], min=-1.0, max=1.0)
-            self.world_actions.radar_target[:, team] = torch.round((radar[:, 0] + 1.0) * 7.5).to(
-                torch.long
+            self.world_actions.radar_target[:, team] = (
+                torch.round((radar[:, 0] + 1.0) * 8.0).to(torch.long) - 1
             )
-            target = self.world_actions.radar_target[:, team]
-            actual = torch.gather(
-                self.world.position_xy,
-                1,
-                target[:, None, None].expand(-1, 1, 2),
-            ).squeeze(1)
-            self.world_actions.radar_report_xy[:, team] = actual + radar[:, 1:3] * 2.0
+            self.world_actions.radar_report_xy[:, team, 0] = radar[:, 1] * 14.0
+            self.world_actions.radar_report_xy[:, team, 1] = radar[:, 2] * 7.5
             self.world_actions.radar_illuminate[:, team] = radar[:, 3] > 0
             self.world_actions.radar_double[:, team] = radar[:, 4] > 0
             self.world_actions.radar_key_solved[:, team] = radar[:, 5] > 0
@@ -610,6 +605,10 @@ class RMCortexDirectMARLEnv(DirectMARLEnv):
             RandomTape(values),
             constants.REFEREE_DT_S,
         )
+        if self._physics_substep % self.cfg.decimation != 0:
+            normalized.radar_update.zero_()
+            normalized.radar_report_xy.zero_()
+            normalized.radar_key_solved.zero_()
         frame = IsaacGeometryFrame(
             shots_fired=normalized.shots_fired,
             hit_source=normalized.hits.source,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field as dataclass_field, fields
 
 import torch
 from torch import Tensor
@@ -16,6 +16,7 @@ from rm_referee.state import GameState
 from rm_world.actions import WorldActions
 from rm_world.arena import ArenaGeometry
 from rm_world.backend import TorchRuleBackend
+from rm_world.belief import BeliefConfig, EntityBeliefTracker
 from rm_world.kinematics import KinematicConfig, KinematicState, KinematicWorld
 from rm_world.observations import ObservationBuilder, WorldObservation
 from rm_world.rewards import RewardBuilder
@@ -30,10 +31,15 @@ class TorchEnvConfig:
     physics_dt_s: float = 1.0 / 60.0
     policy_dt_s: float = 0.2
     validate_referee: bool = True
+    observation_mode: str = "oracle"
+    belief: BeliefConfig = dataclass_field(default_factory=BeliefConfig)
 
     def validate(self) -> None:
         if self.num_envs <= 0:
             raise ValueError("num_envs must be positive")
+        if self.observation_mode not in {"oracle", "belief"}:
+            raise ValueError("observation_mode must be 'oracle' or 'belief'")
+        self.belief.validate()
         referee_ticks = self.policy_dt_s / self.referee_dt_s
         physics_steps = self.referee_dt_s / self.physics_dt_s
         if abs(referee_ticks - round(referee_ticks)) > 1.0e-9:
@@ -111,7 +117,11 @@ class TorchRMArena:
             arena=self.arena,
         )
         self.backend = TorchRuleBackend(arena=self.arena)
-        self.observation_builder = ObservationBuilder(arena=self.arena)
+        self.observation_builder = ObservationBuilder(
+            arena=self.arena,
+            mode=self.config.observation_mode,
+            belief_config=self.config.belief,
+        )
         self.reward_builder = RewardBuilder()
         self.generator = torch.Generator(device=self.config.device)
         self.generator.manual_seed(self.config.seed)
@@ -120,6 +130,21 @@ class TorchRMArena:
             device=self.config.device,
         )
         self.world = KinematicState.spawn(self.game, self.arena)
+        self.belief_tracker = (
+            EntityBeliefTracker(
+                self.game,
+                config=self.observation_builder.belief_config,
+            )
+            if self.config.observation_mode == "belief"
+            else None
+        )
+        if self.belief_tracker is not None:
+            visibility = self.observation_builder.visibility(self.game, self.world)
+            self.belief_tracker.reset(
+                self.game,
+                self.world,
+                visibility.local_by_team,
+            )
 
     @property
     def controllable_mask(self) -> Tensor:
@@ -127,7 +152,14 @@ class TorchRMArena:
         return (roles != Role.BASE) & (roles != Role.OUTPOST)
 
     def observe(self) -> WorldObservation:
-        return self.observation_builder.build(self.game, self.world)
+        visibility = self.observation_builder.visibility(self.game, self.world)
+        belief = self.belief_tracker.view() if self.belief_tracker is not None else None
+        return self.observation_builder.build(
+            self.game,
+            self.world,
+            belief=belief,
+            visibility=visibility,
+        )
 
     def reset(
         self,
@@ -152,6 +184,14 @@ class TorchRMArena:
         for field in fields(KinematicState):
             current = getattr(self.world, field.name)
             current[env_ids] = getattr(fresh_world, field.name)[env_ids]
+        if self.belief_tracker is not None:
+            visibility = self.observation_builder.visibility(self.game, self.world)
+            self.belief_tracker.reset(
+                self.game,
+                self.world,
+                visibility.local_by_team,
+                env_ids,
+            )
         return self.observe()
 
     def step(self, actions: WorldActions) -> TorchEnvStep:
@@ -162,7 +202,7 @@ class TorchRMArena:
         total_reward = torch.zeros_like(self.game.hp)
         commands = self.backend.kinematic_commands(self.game, actions)
 
-        for _ in range(referee_ticks):
+        for referee_tick in range(referee_ticks):
             terrain_crossed = torch.zeros_like(self.world.terrain_crossed)
             for _ in range(physics_steps):
                 self.world = self.world_model.step(
@@ -190,6 +230,12 @@ class TorchRMArena:
                 RandomTape(values),
                 self.config.referee_dt_s,
             )
+            # Team radar data and key solutions are discrete policy-rate
+            # messages, not levels held across every 10 Hz referee tick.
+            if referee_tick != referee_ticks - 1:
+                inputs.radar_update.zero_()
+                inputs.radar_report_xy.zero_()
+                inputs.radar_key_solved.zero_()
             self.game, events = self.referee.step(
                 self.game,
                 inputs,
@@ -198,6 +244,14 @@ class TorchRMArena:
             total_reward.add_(self.reward_builder.build(self.game, events))
             _merge_events(total_events, events)
 
+        if self.belief_tracker is not None:
+            visibility = self.observation_builder.visibility(self.game, self.world)
+            self.belief_tracker.advance(
+                self.game,
+                self.world,
+                visibility.local_by_team,
+                dt_s=self.config.policy_dt_s,
+            )
         return TorchEnvStep(
             observation=self.observe(),
             reward=total_reward,

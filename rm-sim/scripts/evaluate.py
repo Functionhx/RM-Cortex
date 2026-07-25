@@ -25,7 +25,7 @@ def main() -> None:
     schema_version = payload.get("policy_schema_version", 1)
     if schema_version != SharedMAPPOPolicy.CHECKPOINT_SCHEMA_VERSION:
         raise RuntimeError(
-            "checkpoint policy schema is incompatible with the full-entity actor; "
+            "checkpoint policy schema is incompatible with the belief-entity actor; "
             "retrain it or migrate the checkpoint"
         )
     policy_kwargs = payload.get("policy_kwargs")
@@ -39,6 +39,7 @@ def main() -> None:
         max_policy_steps=args.max_policy_steps,
         device=device,
         seed=config.seed + 1000,
+        observation_mode=config.observation_mode,
     )
     print(json.dumps(report.as_dict(), indent=2, sort_keys=True))
 

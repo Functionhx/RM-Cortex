@@ -10,6 +10,7 @@
   "max_grad_norm": 0.5,
   "minibatch_size": 4096,
   "num_envs": 64,
+  "observation_mode": "belief",
   "output_dir": "runs/phase1_mappo",
   "role_embedding_dim": 16,
   "rollout_steps": 64,

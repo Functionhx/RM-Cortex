@@ -319,6 +319,12 @@ class TorchRuleBackend:
             radar_safe[:, :, None],
             radar_valid[:, :, None],
         )
+        inputs.radar_report_xy.scatter_(
+            2,
+            radar_safe[:, :, None, None].expand(-1, -1, 1, 2),
+            actions.radar_report_xy[:, :, None, :],
+        )
+        inputs.radar_report_xy.mul_(inputs.radar_update[..., None])
         inputs.radar_quality.scatter_(
             2,
             radar_safe[:, :, None],

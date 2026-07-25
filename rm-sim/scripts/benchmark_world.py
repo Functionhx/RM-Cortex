@@ -11,12 +11,18 @@ import torch
 from rm_world import ScriptedOpponent, TorchEnvConfig, TorchRMArena
 
 
-def benchmark(num_envs: int, iterations: int, device: str) -> tuple[float, float]:
+def benchmark(
+    num_envs: int,
+    iterations: int,
+    device: str,
+    observation_mode: str,
+) -> tuple[float, float]:
     environment = TorchRMArena(
         TorchEnvConfig(
             num_envs=num_envs,
             device=device,
             validate_referee=False,
+            observation_mode=observation_mode,
         )
     )
     opponent = ScriptedOpponent()
@@ -44,9 +50,19 @@ def main() -> None:
         "--device",
         default="cuda" if torch.cuda.is_available() else "cpu",
     )
+    parser.add_argument(
+        "--observation-mode",
+        choices=("belief", "oracle"),
+        default="belief",
+    )
     args = parser.parse_args()
     for num_envs in args.num_envs:
-        milliseconds, throughput = benchmark(num_envs, args.iterations, args.device)
+        milliseconds, throughput = benchmark(
+            num_envs,
+            args.iterations,
+            args.device,
+            args.observation_mode,
+        )
         print(
             f"{args.device} envs={num_envs}: "
             f"{milliseconds:.3f} ms/policy-step, {throughput:,.0f} env-steps/s"

@@ -25,7 +25,7 @@ class PolicyAction:
     special: Tensor
     mode: Tensor
     radar_target: Tensor
-    radar_offset: Tensor
+    radar_report: Tensor
 
     @classmethod
     def stack(cls, actions: list["PolicyAction"]) -> "PolicyAction":
@@ -78,7 +78,7 @@ class PolicyDistributions:
     special: Bernoulli
     mode: Categorical
     radar_target: Categorical
-    radar_offset: Normal
+    radar_report: Normal
 
 
 def _mlp(input_dim: int, hidden_dim: int, output_dim: int) -> nn.Sequential:
@@ -94,7 +94,7 @@ def _mlp(input_dim: int, hidden_dim: int, output_dim: int) -> nn.Sequential:
 class SharedMAPPOPolicy(nn.Module):
     """One actor for all roles and a privileged per-agent value function."""
 
-    CHECKPOINT_SCHEMA_VERSION = 2
+    CHECKPOINT_SCHEMA_VERSION = 3
 
     def __init__(
         self,
@@ -133,9 +133,12 @@ class SharedMAPPOPolicy(nn.Module):
         self.common_logits = nn.Linear(hidden_dim, 2)
         self.special_logits = nn.Linear(hidden_dim, 3)
         self.mode_logits = nn.Linear(hidden_dim, 5)
-        self.radar_target_logits = nn.Linear(hidden_dim, constants.UNIT_COUNT)
-        self.radar_offset_mean = nn.Linear(hidden_dim, 2)
-        self.radar_offset_log_std = nn.Parameter(torch.full((2,), -0.5))
+        # The final class is an explicit no-report action. A radar station must
+        # be able to withhold a low-confidence coordinate instead of being
+        # forced to submit one every policy transition.
+        self.radar_target_logits = nn.Linear(hidden_dim, constants.UNIT_COUNT + 1)
+        self.radar_report_mean = nn.Linear(hidden_dim, 2)
+        self.radar_report_log_std = nn.Parameter(torch.full((2,), -0.5))
 
         self.critic = _mlp(
             state_dim + identity_dim,
@@ -182,7 +185,7 @@ class SharedMAPPOPolicy(nn.Module):
         entity_mask: Tensor,
         agent_ids: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
-        """Encode all entity truths while retaining visibility as a source feature."""
+        """Encode entity beliefs while retaining current visibility as a feature."""
 
         if observations.shape[-1] != self.observation_dim:
             raise ValueError("actor observation dimension does not match the policy")
@@ -240,7 +243,7 @@ class SharedMAPPOPolicy(nn.Module):
             self.special_logits(features),
             self.mode_logits(features),
             self.radar_target_logits(features),
-            self.radar_offset_mean(features),
+            self.radar_report_mean(features),
         )
 
     def value(
@@ -299,7 +302,7 @@ class SharedMAPPOPolicy(nn.Module):
             special_logits,
             mode_logits,
             radar_target_logits,
-            radar_offset_mean,
+            radar_report_mean,
         ) = self._actor_outputs(observations, entities, entity_mask, agent_ids)
         if target_mask.shape != (*agent_ids.shape, 9):
             raise ValueError("target mask must end in the nine-class target schema")
@@ -307,7 +310,7 @@ class SharedMAPPOPolicy(nn.Module):
             raise ValueError("every agent needs at least one valid target")
         masked_target_logits = target_logits.masked_fill(~target_mask, -1.0e9)
         motion_std = self.motion_log_std.clamp(-5.0, 1.0).exp().expand_as(motion_mean)
-        radar_std = self.radar_offset_log_std.clamp(-5.0, 1.0).exp().expand_as(radar_offset_mean)
+        radar_std = self.radar_report_log_std.clamp(-5.0, 1.0).exp().expand_as(radar_report_mean)
         distributions = PolicyDistributions(
             motion=Normal(motion_mean, motion_std),
             target=Categorical(logits=masked_target_logits),
@@ -316,7 +319,7 @@ class SharedMAPPOPolicy(nn.Module):
             special=Bernoulli(logits=special_logits),
             mode=Categorical(logits=mode_logits),
             radar_target=Categorical(logits=radar_target_logits),
-            radar_offset=Normal(radar_offset_mean, radar_std),
+            radar_report=Normal(radar_report_mean, radar_std),
         )
         return distributions, roles
 
@@ -350,7 +353,7 @@ class SharedMAPPOPolicy(nn.Module):
                 special=distributions.special.logits >= 0,
                 mode=distributions.mode.logits.argmax(dim=-1),
                 radar_target=distributions.radar_target.logits.argmax(dim=-1),
-                radar_offset=distributions.radar_offset.mean,
+                radar_report=distributions.radar_report.mean,
             )
         else:
             action = PolicyAction(
@@ -361,7 +364,7 @@ class SharedMAPPOPolicy(nn.Module):
                 special=distributions.special.sample().to(torch.bool),
                 mode=distributions.mode.sample(),
                 radar_target=distributions.radar_target.sample(),
-                radar_offset=distributions.radar_offset.sample(),
+                radar_report=distributions.radar_report.sample(),
             )
         _, _, combat, _, _, _ = self._head_masks(roles, fire_mask)
         action.target = torch.where(
@@ -416,7 +419,12 @@ class SharedMAPPOPolicy(nn.Module):
         motion_dimension = robot[..., None].expand_as(action.motion)
         common_dimension = ground[..., None].expand_as(action.common)
         special_dimension = special[..., None].expand_as(action.special)
-        radar_dimension = radar[..., None].expand_as(action.radar_offset)
+        radar_report_active = radar & (action.radar_target < constants.UNIT_COUNT)
+        radar_log_prob_dimension = radar_report_active[..., None].expand_as(action.radar_report)
+        radar_report_probability = 1.0 - distributions.radar_target.probs[..., constants.UNIT_COUNT]
+        radar_entropy_dimension = (radar.to(action.radar_report.dtype) * radar_report_probability)[
+            ..., None
+        ].expand_as(action.radar_report)
 
         log_prob = (
             (distributions.motion.log_prob(action.motion) * motion_dimension).sum(dim=-1)
@@ -430,9 +438,9 @@ class SharedMAPPOPolicy(nn.Module):
             ).sum(dim=-1)
             + distributions.mode.log_prob(action.mode) * mode
             + distributions.radar_target.log_prob(action.radar_target) * radar
-            + (distributions.radar_offset.log_prob(action.radar_offset) * radar_dimension).sum(
-                dim=-1
-            )
+            + (
+                distributions.radar_report.log_prob(action.radar_report) * radar_log_prob_dimension
+            ).sum(dim=-1)
         )
         entropy = (
             (distributions.motion.entropy() * motion_dimension).sum(dim=-1)
@@ -442,6 +450,6 @@ class SharedMAPPOPolicy(nn.Module):
             + (distributions.special.entropy() * special_dimension).sum(dim=-1)
             + distributions.mode.entropy() * mode
             + distributions.radar_target.entropy() * radar
-            + (distributions.radar_offset.entropy() * radar_dimension).sum(dim=-1)
+            + (distributions.radar_report.entropy() * radar_entropy_dimension).sum(dim=-1)
         )
         return log_prob, entropy

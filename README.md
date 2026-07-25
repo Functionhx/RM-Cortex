@@ -52,15 +52,15 @@ pytest -q
 python scripts/train.py --updates 1 --num-envs 8
 ```
 
-The implementation now includes the vectorized referee, a 2.5D Torch arena with LOS and armor geometry, objective and role-specific tactical scripted baselines, an import-safe Isaac Lab `DirectMARLEnv`, and a parameter-shared MAPPO baseline with centralized critic, entity attention, action masks, checkpoints, and evaluation.
+The implementation now includes the vectorized referee, a 2.5D Torch arena with LOS and armor geometry, objective and role-specific tactical scripted baselines, an import-safe Isaac Lab `DirectMARLEnv`, and a parameter-shared MAPPO baseline with belief-state entity attention, centralized critic, action masks, checkpoints, and evaluation.
 
 Run `python scripts/benchmark_world.py --num-envs 1024 4096` for Torch-world throughput. Inside an Isaac Lab launcher environment, run `PYTHONPATH=src /path/to/IsaacLab/isaaclab.sh -p scripts/isaac_smoke.py --headless` to validate the optional scene backend.
 
 ## Observation model and radar
 
-The current MAPPO actor is an explicit **oracle baseline**: every observer attends over 32 decision-relevant features for all 16 unit slots. A separate visibility tensor records whether each state is legally known, and radar progress and radar-confirmed truth are included as source features. This provides a measurable full-information upper bound. The next partial-observation stage will replace out-of-range enemy truth with a belief mean, observation age, and positive-semidefinite covariance while preserving the same entity axes.
+Phase 1 training defaults to a team-shared **belief observation** over all 16 unit slots. The actor receives each track's estimated position and velocity, last observed decision state, separate position/state ages, bounded positive-semidefinite covariance, and source label. Local or shared sightings refresh the complete track; radar reports update position and velocity without pretending that HP or ammunition is fresh, and an unseen enemy otherwise follows the constant-velocity prediction instead of exposing current truth. Set `"observation_mode": "oracle"` in an experiment config to retain the full-information upper-bound baseline; evaluation automatically uses the mode stored in its checkpoint.
 
-The radar system is distinct from the battlefield outpost. Following manual section 5.6.6, accurate or partially accurate reports build marking progress; confirmed enemy positions appear at `P >= 100`, with 15%/20% ground vulnerability at `P >= 100/120`. The implementation also covers double vulnerability, interference suppression, and aerial laser countermeasures. The MAPPO action layout currently uses the outpost policy slot only as the carrier for team-level radar commands; the referee actions themselves remain team-scoped.
+The radar system is distinct from the battlefield outpost. Following manual section 5.6.6, accurate or partially accurate reports build marking progress; confirmed enemy positions appear at `P >= 100`, with 15%/20% ground vulnerability at `P >= 100/120`. Reports are absolute field coordinates sent once per 5 Hz policy step, and the policy may explicitly withhold a report. The implementation also covers double vulnerability, interference suppression, and aerial laser countermeasures. The MAPPO action layout currently uses the outpost policy slot only as the carrier for team-level radar commands; the referee actions themselves remain team-scoped.
 
 ## Visualization
 
@@ -97,6 +97,7 @@ Add `--device cpu` when CUDA simulation is unavailable or GPU memory is occupied
 - [x] Build the lightweight Torch world and scripted baseline
 - [x] Add the Isaac Lab `DirectMARLEnv` adapter and rule-parity tests
 - [x] Implement reproducible PPO/MAPPO training and evaluation
+- [x] Replace out-of-range actor truth with age- and covariance-aware entity beliefs
 - [x] Validate the scene in a native Isaac Lab headless runtime
 - [ ] Publish full-scale baseline training metrics
 - [ ] Calibrate hit and observation models from competition replays

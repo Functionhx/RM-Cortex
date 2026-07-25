@@ -87,13 +87,18 @@ def decode_policy_actions(
         )
     )
 
-    actions.radar_target.copy_(policy.radar_target[:, radar_slots])
-    target_xy = torch.gather(
-        world.position_xy,
-        1,
-        actions.radar_target[:, :, None].expand(-1, -1, 2),
+    selected_radar_target = policy.radar_target[:, radar_slots]
+    actions.radar_target.copy_(
+        torch.where(
+            selected_radar_target < constants.UNIT_COUNT,
+            selected_radar_target,
+            torch.full_like(selected_radar_target, -1),
+        )
     )
-    actions.radar_report_xy.copy_(target_xy + torch.tanh(policy.radar_offset[:, radar_slots]) * 2.0)
+    actions.radar_report_xy.copy_(
+        torch.tanh(policy.radar_report[:, radar_slots])
+        * policy.radar_report.new_tensor((14.0, 7.5))
+    )
     actions.radar_illuminate.copy_(policy.special[:, radar_slots, 0])
     actions.radar_double.copy_(policy.special[:, radar_slots, 1])
     actions.radar_key_solved.copy_(policy.special[:, radar_slots, 2])

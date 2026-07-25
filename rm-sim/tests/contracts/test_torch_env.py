@@ -8,7 +8,7 @@ from rm_referee import constants
 from rm_referee.schema import Role, Team, slot
 from rm_referee.state import GameState
 from rm_world import ScriptedOpponent, TorchEnvConfig, TorchRMArena, WorldActions
-from rm_world.observations import ENTITY_FEATURE_NAMES, ObservationBuilder
+from rm_world.observations import ENTITY_DIM, ENTITY_FEATURE_NAMES, ObservationBuilder
 
 
 def test_end_to_end_torch_environment_returns_masks_rewards_and_events() -> None:
@@ -18,7 +18,7 @@ def test_end_to_end_torch_environment_returns_masks_rewards_and_events() -> None
     result = env.step(actions)
 
     assert result.observation.agents.shape == (2, 16, 34)
-    assert result.observation.entities.shape == (2, 16, 16, 32)
+    assert result.observation.entities.shape == (2, 16, 16, ENTITY_DIM)
     assert result.observation.target_mask.shape == (2, 16, 9)
     assert result.reward.shape == (2, 16)
     assert torch.isfinite(result.observation.agents).all()
@@ -55,7 +55,7 @@ def test_oracle_entity_state_is_retained_outside_visibility() -> None:
     entity = observation.entities[0, observer, target]
 
     assert not observation.entity_mask[0, observer, target]
-    assert entity.shape == (32,)
+    assert entity.shape == (ENTITY_DIM,)
     assert entity[feature["target_hp_fraction"]] == 0.5
     assert entity[feature["target_yaw_sin"]] == 1
     assert entity[feature["target_velocity_x"]] == 0.5
@@ -96,6 +96,20 @@ def test_seeded_torch_environments_roll_out_identically() -> None:
             getattr(left.world, field.name),
             getattr(right.world, field.name),
         )
+
+
+def test_radar_report_is_submitted_once_per_policy_step() -> None:
+    env = TorchRMArena(TorchEnvConfig(num_envs=1))
+    actions = WorldActions.zeros(env.game)
+    target = slot(Team.BLUE, Role.HERO)
+    actions.radar_target[0, Team.RED] = target
+    actions.radar_report_xy[0, Team.RED] = env.world.position_xy[0, target]
+
+    for _ in range(5):
+        env.step(actions)
+
+    assert env.game.radar_p[0, Team.RED, target] == 15
+    assert env.game.radar_report_age_s[0, Team.RED, target] == 0
 
 
 def test_partial_reset_only_replaces_selected_environment() -> None:

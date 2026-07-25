@@ -22,6 +22,21 @@ def apply_radar(state: GameState, inputs: RuleInputs, dt: float) -> None:
         | (roles == Role.SENTRY)
     )
     received = inputs.radar_update & active & radar_target[None, None, :]
+    state.radar_report_xy.copy_(
+        torch.where(
+            received[..., None],
+            inputs.radar_report_xy,
+            state.radar_report_xy,
+        )
+    )
+    state.radar_report_age_s.copy_(
+        torch.where(
+            received,
+            torch.zeros_like(state.radar_report_age_s),
+            state.radar_report_age_s + dt * (state.radar_report_valid & active).to(state.dtype),
+        )
+    )
+    state.radar_report_valid.logical_or_(received)
     state.radar_no_data_s.copy_(
         torch.where(
             received,

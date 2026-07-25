@@ -119,21 +119,26 @@ class RolloutStorage:
         reward: Tensor,
         done: Tensor,
     ) -> None:
-        self.observations.append(observations.detach())
-        self.entities.append(entities.detach())
-        self.entity_mask.append(entity_mask.detach())
-        self.central_state.append(central_state.detach())
-        self.target_mask.append(target_mask.detach())
-        self.fire_mask.append(fire_mask.detach())
+        # Rollouts are immutable snapshots. This matters for stateful belief
+        # tensors whose backing storage is updated in place on later steps.
+        self.observations.append(observations.detach().clone())
+        self.entities.append(entities.detach().clone())
+        self.entity_mask.append(entity_mask.detach().clone())
+        self.central_state.append(central_state.detach().clone())
+        self.target_mask.append(target_mask.detach().clone())
+        self.fire_mask.append(fire_mask.detach().clone())
         self.actions.append(
             PolicyAction(
-                **{name: getattr(actions, name).detach() for name in actions.__dataclass_fields__}
+                **{
+                    name: getattr(actions, name).detach().clone()
+                    for name in actions.__dataclass_fields__
+                }
             )
         )
-        self.log_prob.append(log_prob.detach())
-        self.value.append(value.detach())
-        self.reward.append(reward.detach())
-        self.done.append(done.detach())
+        self.log_prob.append(log_prob.detach().clone())
+        self.value.append(value.detach().clone())
+        self.reward.append(reward.detach().clone())
+        self.done.append(done.detach().clone())
 
     def finish(
         self,

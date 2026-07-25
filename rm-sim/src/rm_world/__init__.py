@@ -17,6 +17,12 @@ from rm_world.arena import (
     TerrainPrimitive,
 )
 from rm_world.backend import TorchRuleBackend
+from rm_world.belief import (
+    BeliefConfig,
+    EntityBeliefTracker,
+    EntityBeliefView,
+    EntitySource,
+)
 from rm_world.env import TorchEnvConfig, TorchEnvStep, TorchRMArena
 from rm_world.geometry import ArmorSolution, HitModel, HitModelConfig
 from rm_world.kinematics import (
@@ -51,6 +57,10 @@ __all__ = [
     "BLUE_FORTRESS_CENTER_XY",
     "BLUE_OUTPOST_CENTER_XY",
     "BLUE_SUPPLY_CENTER_XY",
+    "BeliefConfig",
+    "EntityBeliefTracker",
+    "EntityBeliefView",
+    "EntitySource",
     "HitModel",
     "HitModelConfig",
     "KinematicCommands",

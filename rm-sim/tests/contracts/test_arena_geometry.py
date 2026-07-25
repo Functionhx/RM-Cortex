@@ -245,5 +245,33 @@ def test_torch_backend_generates_armor_hit_from_target_action() -> None:
     assert next_state.hp[0, target] == 180
 
 
+def test_torch_backend_scatters_team_radar_reports_to_selected_targets() -> None:
+    game = GameState.create(2)
+    world = KinematicState.spawn(game)
+    actions = WorldActions.zeros(game)
+    red_target = slot(Team.BLUE, Role.INFANTRY_3)
+    blue_target = slot(Team.RED, Role.HERO)
+    actions.radar_target[0, Team.RED] = red_target
+    actions.radar_report_xy[0, Team.RED] = torch.tensor((3.5, -2.0))
+    actions.radar_target[1, Team.BLUE] = blue_target
+    actions.radar_report_xy[1, Team.BLUE] = torch.tensor((-4.0, 1.25))
+    tape = RandomTape(torch.zeros((2, backend_hit_draws())))
+
+    inputs = TorchRuleBackend().rule_inputs(world, game, actions, tape, 0.1)
+
+    assert inputs.radar_update.sum() == 2
+    assert inputs.radar_update[0, Team.RED, red_target]
+    assert inputs.radar_update[1, Team.BLUE, blue_target]
+    assert torch.equal(
+        inputs.radar_report_xy[0, Team.RED, red_target],
+        torch.tensor((3.5, -2.0)),
+    )
+    assert torch.equal(
+        inputs.radar_report_xy[1, Team.BLUE, blue_target],
+        torch.tensor((-4.0, 1.25)),
+    )
+    assert torch.count_nonzero(inputs.radar_report_xy * (~inputs.radar_update[..., None])) == 0
+
+
 def backend_hit_draws() -> int:
     return 16 * 2 + 2

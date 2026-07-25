@@ -25,7 +25,7 @@ def _policy_inputs() -> tuple[torch.Tensor, ...]:
     )
 
 
-def test_unobserved_entity_truth_changes_continuous_actor_output() -> None:
+def test_unobserved_entity_belief_changes_continuous_actor_output() -> None:
     torch.manual_seed(17)
     policy = SharedMAPPOPolicy(hidden_dim=32, role_embedding_dim=8)
     (

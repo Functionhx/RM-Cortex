@@ -132,6 +132,7 @@ class RuleInputs:
 
     radar_quality: Tensor
     radar_update: Tensor
+    radar_report_xy: Tensor
     radar_double_request: Tensor
     radar_key_solved: Tensor
 
@@ -240,6 +241,16 @@ class RuleInputs:
                 device=state.device,
                 dtype=torch.bool,
             ),
+            radar_report_xy=torch.zeros(
+                (
+                    state.num_envs,
+                    constants.TEAM_COUNT,
+                    constants.UNIT_COUNT,
+                    2,
+                ),
+                device=state.device,
+                dtype=state.dtype,
+            ),
             radar_double_request=torch.zeros(env_team, device=state.device, dtype=torch.bool),
             radar_key_solved=torch.zeros(env_team, device=state.device, dtype=torch.bool),
         )
@@ -318,6 +329,13 @@ class RuleInputs:
             | (self.radar_quality == RadarQuality.HALF_ACCURATE)
             | (self.radar_quality == RadarQuality.ACCURATE)
         )
+        radar_shape = (state.num_envs, constants.TEAM_COUNT, constants.UNIT_COUNT)
+        if self.radar_update.shape != radar_shape:
+            raise ValueError("radar_update must have shape [env, team, unit]")
+        if self.radar_report_xy.shape != (*radar_shape, 2):
+            raise ValueError("radar_report_xy must have shape [env, team, unit, 2]")
+        if not torch.all(torch.isfinite(self.radar_report_xy[self.radar_update])):
+            raise ValueError("updated radar reports must contain finite coordinates")
         if torch.any(self.radar_update & ~quality_is_valid):
             raise ValueError("updated radar quality must be wrong, half-accurate, or accurate")
         if self.zone_occupancy.shape != (*env_unit, constants.ZONE_COUNT):

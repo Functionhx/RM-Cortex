@@ -54,6 +54,7 @@ class MAPPOTrainingRunner:
                 device=self.device,
                 seed=config.seed,
                 validate_referee=False,
+                observation_mode=config.observation_mode,
             )
         )
         self.policy = policy or SharedMAPPOPolicy(

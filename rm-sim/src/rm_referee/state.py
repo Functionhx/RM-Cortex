@@ -161,6 +161,9 @@ class GameState:
     radar_p: Tensor
     radar_last_quality: Tensor
     radar_no_data_s: Tensor
+    radar_report_xy: Tensor
+    radar_report_valid: Tensor
+    radar_report_age_s: Tensor
     radar_truth_visible: Tensor
     radar_vulnerability_progress_s: Tensor
     radar_double_charges: Tensor
@@ -474,6 +477,26 @@ class GameState:
                 device=device,
                 dtype=dtype,
             ),
+            radar_report_xy=torch.zeros(
+                (
+                    num_envs,
+                    constants.TEAM_COUNT,
+                    constants.UNIT_COUNT,
+                    2,
+                ),
+                device=device,
+                dtype=dtype,
+            ),
+            radar_report_valid=torch.zeros(
+                (num_envs, constants.TEAM_COUNT, constants.UNIT_COUNT),
+                device=device,
+                dtype=torch.bool,
+            ),
+            radar_report_age_s=torch.zeros(
+                (num_envs, constants.TEAM_COUNT, constants.UNIT_COUNT),
+                device=device,
+                dtype=dtype,
+            ),
             radar_truth_visible=torch.zeros(
                 (num_envs, constants.TEAM_COUNT, constants.UNIT_COUNT),
                 device=device,
@@ -563,5 +586,19 @@ class GameState:
             raise ValueError("chassis energy is outside its official range")
         if torch.any(self.radar_p < 0) or torch.any(self.radar_p > 150):
             raise ValueError("radar progress is outside [0, 150]")
+        radar_shape = (self.num_envs, constants.TEAM_COUNT, constants.UNIT_COUNT)
+        if self.radar_report_xy.shape != (*radar_shape, 2):
+            raise ValueError("radar_report_xy must have shape [env, team, unit, 2]")
+        if (
+            self.radar_report_valid.shape != radar_shape
+            or self.radar_report_age_s.shape != radar_shape
+        ):
+            raise ValueError("radar report metadata must have shape [env, team, unit]")
+        if not torch.all(torch.isfinite(self.radar_report_age_s)) or torch.any(
+            self.radar_report_age_s < 0
+        ):
+            raise ValueError("radar report age must be finite and non-negative")
+        if not torch.all(torch.isfinite(self.radar_report_xy[self.radar_report_valid])):
+            raise ValueError("valid radar reports must contain finite coordinates")
         if torch.any(self.team_level_cap < 1) or torch.any(self.team_level_cap > 10):
             raise ValueError("team level cap is outside [1, 10]")

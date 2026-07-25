@@ -1,4 +1,4 @@
-"""Oracle entity tensors, visibility metadata, and deterministic action masks."""
+"""Oracle or belief entity tensors with deterministic action masks."""
 
 from __future__ import annotations
 
@@ -11,11 +11,20 @@ from rm_referee import constants
 from rm_referee.schema import Role, Weapon, unit_roles, unit_teams, weapon_capability
 from rm_referee.state import GameState
 from rm_world.arena import ArenaGeometry
+from rm_world.belief import (
+    ENTITY_SOURCE_COUNT,
+    TARGET_ALIVE_INDEX,
+    BeliefConfig,
+    EntityBeliefTracker,
+    EntityBeliefView,
+    EntitySource,
+    build_target_state,
+)
 from rm_world.geometry import NO_TARGET, RUNE_TARGET, resolve_target_slots
 from rm_world.kinematics import KinematicState
 
 
-ENTITY_FEATURE_NAMES = (
+BASE_ENTITY_FEATURE_NAMES = (
     "relative_x",
     "relative_y",
     "relative_z",
@@ -49,6 +58,34 @@ ENTITY_FEATURE_NAMES = (
     "target_role_base",
     "target_role_outpost",
 )
+COVARIANCE_FEATURE_NAMES = (
+    "covariance_x_x",
+    "covariance_x_y",
+    "covariance_x_vx",
+    "covariance_x_vy",
+    "covariance_y_y",
+    "covariance_y_vx",
+    "covariance_y_vy",
+    "covariance_vx_vx",
+    "covariance_vx_vy",
+    "covariance_vy_vy",
+)
+SOURCE_FEATURE_NAMES = (
+    "source_oracle",
+    "source_shared",
+    "source_local",
+    "source_radar_confirmed",
+    "source_radar_estimate",
+    "source_prediction",
+    "source_prior",
+)
+ENTITY_FEATURE_NAMES = (
+    *BASE_ENTITY_FEATURE_NAMES,
+    "position_observation_age_fraction",
+    "state_observation_age_fraction",
+    *COVARIANCE_FEATURE_NAMES,
+    *SOURCE_FEATURE_NAMES,
+)
 ENTITY_DIM = len(ENTITY_FEATURE_NAMES)
 
 
@@ -57,26 +94,42 @@ class WorldObservation:
     agents: Tensor
     entities: Tensor
     entity_mask: Tensor
+    entity_covariance: Tensor
+    entity_position_age_s: Tensor
+    entity_state_age_s: Tensor
+    entity_source: Tensor
     target_mask: Tensor
     fire_mask: Tensor
     central: Tensor
 
 
-class ObservationBuilder:
-    """Build full-truth entity observations and a privileged critic state.
+@dataclass(frozen=True)
+class VisibilityMasks:
+    local_by_observer: Tensor
+    local_by_team: Tensor
+    shared_by_team: Tensor
+    radar_confirmed_by_team: Tensor
+    visible_by_observer: Tensor
 
-    ``entities`` always contains oracle state; ``entity_mask`` separately records
-    which observer-target pairs are legally visible.
-    """
+
+class ObservationBuilder:
+    """Build oracle or state-estimated actor observations."""
 
     def __init__(
         self,
         arena: ArenaGeometry | None = None,
         *,
         local_sensor_range_m: float = 12.0,
+        mode: str = "oracle",
+        belief_config: BeliefConfig | None = None,
     ) -> None:
+        if mode not in {"oracle", "belief"}:
+            raise ValueError("observation mode must be 'oracle' or 'belief'")
         self.arena = arena or ArenaGeometry()
         self.local_sensor_range_m = local_sensor_range_m
+        self.mode = mode
+        self.belief_config = belief_config or BeliefConfig()
+        self.belief_config.validate()
 
     @property
     def agent_dim(self) -> int:
@@ -86,7 +139,81 @@ class ObservationBuilder:
     def entity_dim(self) -> int:
         return ENTITY_DIM
 
-    def build(self, game: GameState, world: KinematicState) -> WorldObservation:
+    def visibility(self, game: GameState, world: KinematicState) -> VisibilityMasks:
+        """Return team-shared local, radar, and static knowledge masks."""
+
+        roles = unit_roles(game.device)
+        teams = unit_teams(game.device)
+        observer_xy = world.position_xy[:, :, None, :]
+        target_xy = world.position_xy[:, None, :, :]
+        distance = torch.linalg.vector_norm(target_xy - observer_xy, dim=-1)
+        los = self.arena.line_of_sight(
+            observer_xy.expand(-1, -1, constants.UNIT_COUNT, -1),
+            target_xy.expand(-1, constants.UNIT_COUNT, -1, -1),
+        )
+        observer_mobile = (
+            (roles <= Role.SENTRY)[None, :]
+            & game.alive
+            & ~game.video_disabled
+            & ~game.controller_offline
+        )
+        target_mobile = roles <= Role.SENTRY
+        local_by_observer = (
+            (distance <= self.local_sensor_range_m)
+            & los
+            & observer_mobile[:, :, None]
+            & target_mobile[None, None, :]
+        )
+        local_by_team = local_by_observer.view(
+            game.num_envs,
+            constants.TEAM_COUNT,
+            constants.ROLES_PER_TEAM,
+            constants.UNIT_COUNT,
+        ).any(dim=2)
+        shared_by_team = EntityBeliefTracker.shared_mask(game.device)
+        radar_confirmed_by_team = game.radar_truth_visible & target_mobile[None, None, :]
+        known_by_team = shared_by_team[None, :, :] | local_by_team | radar_confirmed_by_team
+        return VisibilityMasks(
+            local_by_observer=local_by_observer,
+            local_by_team=local_by_team,
+            shared_by_team=shared_by_team,
+            radar_confirmed_by_team=radar_confirmed_by_team,
+            visible_by_observer=known_by_team[:, teams, :],
+        )
+
+    @staticmethod
+    def _pack_covariance(covariance: Tensor) -> Tensor:
+        scale = torch.tensor(
+            (14.0, 7.5, 3.0, 3.0),
+            device=covariance.device,
+            dtype=covariance.dtype,
+        )
+        normalized = covariance / (scale[:, None] * scale[None, :])
+        pairs = (
+            (0, 0),
+            (0, 1),
+            (0, 2),
+            (0, 3),
+            (1, 1),
+            (1, 2),
+            (1, 3),
+            (2, 2),
+            (2, 3),
+            (3, 3),
+        )
+        return torch.stack(
+            tuple(normalized[..., row, column] for row, column in pairs),
+            dim=-1,
+        )
+
+    def build(
+        self,
+        game: GameState,
+        world: KinematicState,
+        *,
+        belief: EntityBeliefView | None = None,
+        visibility: VisibilityMasks | None = None,
+    ) -> WorldObservation:
         roles = unit_roles(game.device)
         teams = unit_teams(game.device)
         role_one_hot = torch.nn.functional.one_hot(
@@ -131,104 +258,76 @@ class ObservationBuilder:
         )
         agents = torch.cat(agent_parts, dim=-1)
 
-        observer_xy = world.position_xy[:, :, None, :]
-        target_xy = world.position_xy[:, None, :, :]
-        relative = target_xy - observer_xy
-        distance = torch.linalg.vector_norm(relative, dim=-1)
-        los = self.arena.line_of_sight(
-            observer_xy.expand(-1, -1, constants.UNIT_COUNT, -1),
-            target_xy.expand(-1, constants.UNIT_COUNT, -1, -1),
-        )
+        visibility = visibility or self.visibility(game, world)
         same_team = teams[:, None] == teams[None, :]
-        target_is_building = (roles == Role.BASE) | (roles == Role.OUTPOST)
-        # V1.5.0 pp. 117–119: radar-confirmed truth is scoped to the observing team.
-        radar_visible = game.radar_truth_visible[:, teams, :]
-        visible = (
-            same_team[None, :, :]
-            | target_is_building[None, None, :]
-            | ((distance <= self.local_sensor_range_m) & los)
-            | radar_visible
-        )
-        visible &= game.alive[:, None, :] | target_is_building[None, None, :]
-
         target_role = torch.nn.functional.one_hot(
             roles,
             constants.ROLES_PER_TEAM,
         ).to(game.dtype)
-        target_yaw = world.yaw[:, None, :].expand(
-            -1,
-            constants.UNIT_COUNT,
-            -1,
-        )
-        target_velocity = world.velocity_xy[:, None, :, :].expand(
-            -1,
-            constants.UNIT_COUNT,
-            -1,
-            -1,
-        )
-        target_hp = hp_fraction[:, None, :].expand(-1, constants.UNIT_COUNT, -1)
-        target_alive = game.alive[:, None, :].expand(-1, constants.UNIT_COUNT, -1)
-        target_level = game.level[:, None, :].expand(-1, constants.UNIT_COUNT, -1)
-        target_xp = game.xp[:, None, :].expand(-1, constants.UNIT_COUNT, -1)
-        target_heat = heat_fraction[:, None, :, :].expand(
-            -1,
-            constants.UNIT_COUNT,
-            -1,
-            -1,
-        )
-        target_ammo = game.ammo[:, None, :, :].expand(
-            -1,
-            constants.UNIT_COUNT,
-            -1,
-            -1,
-        )
-        target_chassis_energy = game.chassis_energy[:, None, :].expand(
-            -1,
-            constants.UNIT_COUNT,
-            -1,
-        )
-        target_power_buffer = game.power_buffer_j[:, None, :].expand(
-            -1,
-            constants.UNIT_COUNT,
-            -1,
-        )
-        target_weak = game.weak[:, None, :].expand(-1, constants.UNIT_COUNT, -1)
-        target_invulnerable = game.invulnerable_s[:, None, :].expand(
-            -1,
-            constants.UNIT_COUNT,
-            -1,
-        )
-        effective_vulnerability = torch.maximum(
-            game.vulnerability_fraction,
-            game.radar_vulnerability_fraction,
-        )
-        target_vulnerability = effective_vulnerability[:, None, :].expand(
-            -1,
-            constants.UNIT_COUNT,
-            -1,
-        )
+        if self.mode == "belief":
+            if belief is None:
+                raise ValueError("belief observation mode requires an EntityBeliefView")
+            belief_view = belief
+        else:
+            truth_mean = torch.cat((world.position_xy, world.velocity_xy), dim=-1)
+            truth_state = build_target_state(game, world)
+            team_shape = (
+                game.num_envs,
+                constants.TEAM_COUNT,
+                constants.UNIT_COUNT,
+            )
+            belief_view = EntityBeliefView(
+                mean=truth_mean[:, None, :, :].expand(-1, constants.TEAM_COUNT, -1, -1),
+                covariance=torch.zeros(
+                    (*team_shape, 4, 4),
+                    device=game.device,
+                    dtype=game.dtype,
+                ),
+                target_state=truth_state[:, None, :, :].expand(
+                    -1,
+                    constants.TEAM_COUNT,
+                    -1,
+                    -1,
+                ),
+                valid=torch.ones(team_shape, device=game.device, dtype=torch.bool),
+                position_age_s=torch.zeros(
+                    team_shape,
+                    device=game.device,
+                    dtype=game.dtype,
+                ),
+                state_age_s=torch.zeros(
+                    team_shape,
+                    device=game.device,
+                    dtype=game.dtype,
+                ),
+                source=torch.full(
+                    team_shape,
+                    EntitySource.ORACLE,
+                    device=game.device,
+                    dtype=torch.int8,
+                ),
+            )
+
+        target_mean = belief_view.mean[:, teams, :, :]
+        target_state = belief_view.target_state[:, teams, :, :]
+        covariance = belief_view.covariance[:, teams, :, :, :]
+        position_age_s = belief_view.position_age_s[:, teams, :]
+        state_age_s = belief_view.state_age_s[:, teams, :]
+        source = belief_view.source[:, teams, :]
+        observer_xy = world.position_xy[:, :, None, :]
+        relative = target_mean[..., :2] - observer_xy
+        distance = torch.linalg.vector_norm(relative, dim=-1)
         observer_radar_progress = game.radar_p[:, teams, :]
-        entity_parts = (
+        base_entity_parts = (
             relative[..., 0:1] / 28.0,
             relative[..., 1:2] / 15.0,
-            (world.position_z[:, None, :] - world.position_z[:, :, None])[..., None] / 5.0,
+            (target_state[..., 0] - world.position_z[:, :, None])[..., None] / 5.0,
             (distance / 31.0)[..., None],
-            torch.sin(target_yaw)[..., None],
-            torch.cos(target_yaw)[..., None],
-            target_velocity / 3.0,
-            target_hp[..., None],
-            target_alive.to(game.dtype)[..., None],
-            target_level.to(game.dtype)[..., None] / 10.0,
-            target_xp[..., None] / 5000.0,
-            target_heat,
-            torch.clamp(target_ammo.to(game.dtype) / 750.0, max=1.0),
-            target_chassis_energy[..., None] / constants.CHASSIS_ENERGY_MAX,
-            target_power_buffer[..., None] / constants.POWER_BUFFER_MAX_J,
-            target_weak.to(game.dtype)[..., None],
-            torch.clamp(target_invulnerable[..., None] / 30.0, max=1.0),
-            target_vulnerability[..., None],
+            target_state[..., 1:3],
+            target_mean[..., 2:4] / 3.0,
+            target_state[..., 3:],
             (observer_radar_progress / 150.0)[..., None],
-            radar_visible.to(game.dtype)[..., None],
+            visibility.radar_confirmed_by_team[:, teams, :, None].to(game.dtype),
             same_team[None, :, :, None].to(game.dtype).expand(game.num_envs, -1, -1, -1),
             target_role[None, None, :, :].expand(
                 game.num_envs,
@@ -237,7 +336,31 @@ class ObservationBuilder:
                 -1,
             ),
         )
-        entities = torch.cat(entity_parts, dim=-1)
+        base_entities = torch.cat(base_entity_parts, dim=-1)
+        if base_entities.shape[-1] != len(BASE_ENTITY_FEATURE_NAMES):
+            raise RuntimeError("base entity feature schema is inconsistent")
+        source_one_hot = torch.nn.functional.one_hot(
+            source.to(torch.long),
+            ENTITY_SOURCE_COUNT,
+        ).to(game.dtype)
+        entities = torch.cat(
+            (
+                base_entities,
+                torch.clamp(
+                    position_age_s / self.belief_config.age_feature_horizon_s,
+                    max=1.0,
+                )[..., None],
+                torch.clamp(
+                    state_age_s / self.belief_config.age_feature_horizon_s,
+                    max=1.0,
+                )[..., None],
+                self._pack_covariance(covariance),
+                source_one_hot,
+            ),
+            dim=-1,
+        )
+        if entities.shape[-1] != ENTITY_DIM:
+            raise RuntimeError("entity feature schema is inconsistent")
 
         choice = (
             torch.arange(9, device=game.device)
@@ -251,11 +374,21 @@ class ObservationBuilder:
         target_slots = resolve_target_slots(choice)
         safe_target = torch.clamp(target_slots, min=0)
         target_alive_by_choice = torch.gather(
-            game.alive[:, None, :].expand(-1, constants.UNIT_COUNT, -1),
+            (target_state[..., TARGET_ALIVE_INDEX] >= 0.5),
             2,
             safe_target,
         )
-        target_mask = (choice < RUNE_TARGET) & target_alive_by_choice
+        target_visible_by_choice = torch.gather(
+            visibility.visible_by_observer,
+            2,
+            safe_target,
+        )
+        targetable = (
+            target_alive_by_choice
+            if self.mode == "oracle"
+            else target_alive_by_choice & target_visible_by_choice
+        )
+        target_mask = (choice < RUNE_TARGET) & targetable
         outpost_alive = target_mask[:, :, 6]
         target_mask[:, :, 5] &= ~outpost_alive
         own_rune_active = (game.rune_mode[:, teams] != 0) & (
@@ -314,7 +447,11 @@ class ObservationBuilder:
         return WorldObservation(
             agents=agents,
             entities=entities,
-            entity_mask=visible,
+            entity_mask=visibility.visible_by_observer,
+            entity_covariance=covariance,
+            entity_position_age_s=position_age_s,
+            entity_state_age_s=state_age_s,
+            entity_source=source,
             target_mask=target_mask,
             fire_mask=fire_mask,
             central=central,

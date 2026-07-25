@@ -29,7 +29,7 @@ def test_rollout_flatten_preserves_entity_axes() -> None:
         special=torch.zeros(*rollout_shape, 3, dtype=torch.bool),
         mode=torch.zeros(rollout_shape, dtype=torch.long),
         radar_target=torch.zeros(rollout_shape, dtype=torch.long),
-        radar_offset=torch.zeros(*rollout_shape, 2),
+        radar_report=torch.zeros(*rollout_shape, 2),
     )
     entities = torch.arange(
         time_steps * num_envs * num_agents * num_agents * entity_dim,
@@ -109,6 +109,117 @@ def test_policy_sampling_respects_dynamic_masks_and_decodes_roles() -> None:
     assert actions.radar_target.shape == (2, 2)
 
 
+def test_radar_report_decode_is_absolute_and_independent_of_target_truth() -> None:
+    environment = TorchRMArena(TorchEnvConfig(num_envs=2, seed=7))
+    agent_shape = (environment.game.num_envs, 16)
+    radar_slots = [
+        slot(Team.RED, Role.OUTPOST),
+        slot(Team.BLUE, Role.OUTPOST),
+    ]
+    radar_report = torch.zeros(*agent_shape, 2)
+    radar_report[:, radar_slots] = torch.tensor(
+        [
+            [[0.25, -0.5], [-0.75, 1.25]],
+            [[1.5, -2.0], [-0.1, 0.8]],
+        ]
+    )
+    radar_target = torch.zeros(agent_shape, dtype=torch.long)
+    radar_target[:, radar_slots[0]] = slot(Team.BLUE, Role.HERO)
+    radar_target[:, radar_slots[1]] = slot(Team.RED, Role.SENTRY)
+    policy_action = PolicyAction(
+        motion=torch.zeros(*agent_shape, 4),
+        target=torch.zeros(agent_shape, dtype=torch.long),
+        fire=torch.zeros(agent_shape, dtype=torch.bool),
+        common=torch.zeros(*agent_shape, 2, dtype=torch.bool),
+        special=torch.zeros(*agent_shape, 3, dtype=torch.bool),
+        mode=torch.zeros(agent_shape, dtype=torch.long),
+        radar_target=radar_target,
+        radar_report=radar_report,
+    )
+
+    decoded_before = decode_policy_actions(
+        environment.game,
+        environment.world,
+        policy_action,
+    )
+    expected = torch.tanh(radar_report[:, radar_slots]) * torch.tensor([14.0, 7.5])
+    assert torch.allclose(decoded_before.radar_report_xy, expected)
+    assert torch.equal(
+        decoded_before.radar_target,
+        radar_target[:, radar_slots],
+    )
+
+    environment.world.position_xy.add_(1000.0)
+    decoded_after = decode_policy_actions(
+        environment.game,
+        environment.world,
+        policy_action,
+    )
+    assert torch.equal(decoded_after.radar_report_xy, decoded_before.radar_report_xy)
+
+
+def test_radar_policy_can_choose_not_to_report() -> None:
+    environment = TorchRMArena(TorchEnvConfig(num_envs=1))
+    observation = environment.observe()
+    policy = SharedMAPPOPolicy(hidden_dim=32, role_embedding_dim=8)
+    step = policy.act(
+        observation.agents,
+        observation.entities,
+        observation.entity_mask,
+        observation.central,
+        observation.target_mask,
+        observation.fire_mask,
+        deterministic=True,
+    )
+    radar_slots = [
+        slot(Team.RED, Role.OUTPOST),
+        slot(Team.BLUE, Role.OUTPOST),
+    ]
+    step.action.radar_target[:, radar_slots] = 16
+
+    actions = decode_policy_actions(
+        environment.game,
+        environment.world,
+        step.action,
+    )
+
+    assert torch.equal(actions.radar_target, torch.full((1, 2), -1))
+    actions.validate(environment.game)
+
+    agent_ids = policy.default_agent_ids(
+        observation.agents.shape[:-1],
+        observation.agents.device,
+    )
+    without_coordinates = policy.evaluate_actions(
+        observation.agents,
+        observation.entities,
+        observation.entity_mask,
+        observation.central,
+        observation.target_mask,
+        observation.fire_mask,
+        step.action,
+        agent_ids,
+    )
+    changed_action = PolicyAction(
+        **{name: getattr(step.action, name).clone() for name in step.action.__dataclass_fields__}
+    )
+    changed_action.radar_report[:, radar_slots] = 1000
+    changed_coordinates = policy.evaluate_actions(
+        observation.agents,
+        observation.entities,
+        observation.entity_mask,
+        observation.central,
+        observation.target_mask,
+        observation.fire_mask,
+        changed_action,
+        agent_ids,
+    )
+    assert torch.equal(
+        changed_coordinates.log_prob[:, radar_slots],
+        without_coordinates.log_prob[:, radar_slots],
+    )
+
+
 def test_tiny_mappo_update_is_finite_and_changes_parameters(tmp_path: Path) -> None:
     config = MAPPOConfig(
         num_envs=2,
@@ -121,6 +232,7 @@ def test_tiny_mappo_update_is_finite_and_changes_parameters(tmp_path: Path) -> N
         device="cpu",
     )
     runner = MAPPOTrainingRunner(config)
+    assert runner.environment.config.observation_mode == "belief"
     before = [parameter.detach().clone() for parameter in runner.policy.parameters()]
     entity_before = {
         name: parameter.detach().clone()
