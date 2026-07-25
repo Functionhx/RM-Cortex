@@ -15,7 +15,7 @@ from rm_referee.schema import Role, unit_roles
 from rm_referee.state import GameState
 from rm_world.actions import WorldActions
 from rm_world.arena import ArenaGeometry
-from rm_world.backend import TorchRuleBackend
+from rm_world.backend import TorchRuleBackend, mask_intermediate_policy_pulses
 from rm_world.belief import BeliefConfig, EntityBeliefTracker
 from rm_world.kinematics import KinematicConfig, KinematicState, KinematicWorld
 from rm_world.observations import ObservationBuilder, WorldObservation
@@ -230,12 +230,10 @@ class TorchRMArena:
                 RandomTape(values),
                 self.config.referee_dt_s,
             )
-            # Team radar data and key solutions are discrete policy-rate
+            # Radar data, solved keys, and dart shots are discrete policy-rate
             # messages, not levels held across every 10 Hz referee tick.
             if referee_tick != referee_ticks - 1:
-                inputs.radar_update.zero_()
-                inputs.radar_report_xy.zero_()
-                inputs.radar_key_solved.zero_()
+                mask_intermediate_policy_pulses(inputs)
             self.game, events = self.referee.step(
                 self.game,
                 inputs,

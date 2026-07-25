@@ -30,6 +30,20 @@ from rm_world.geometry import (
 from rm_world.kinematics import KinematicCommands, KinematicState
 
 
+def mask_intermediate_policy_pulses(inputs: RuleInputs) -> None:
+    """Suppress policy-rate messages on an intermediate referee tick.
+
+    Motion and request levels remain active for the complete policy step.
+    Radar reports, solved keys, and dart fire targets are discrete messages
+    submitted exactly once, on the final referee tick of that policy step.
+    """
+
+    inputs.radar_update.zero_()
+    inputs.radar_report_xy.zero_()
+    inputs.radar_key_solved.zero_()
+    inputs.dart_fire_target.fill_(-1)
+
+
 class TorchRuleBackend:
     """Generate LOS, armor, zone, and command facts without game-rule duplication."""
 

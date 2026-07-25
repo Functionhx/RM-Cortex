@@ -5,7 +5,7 @@ from dataclasses import fields
 import torch
 
 from rm_referee import constants
-from rm_referee.schema import Role, Team, slot
+from rm_referee.schema import DartGateState, DartTarget, Role, Team, slot
 from rm_referee.state import GameState
 from rm_world import ScriptedOpponent, TorchEnvConfig, TorchRMArena, WorldActions
 from rm_world.observations import ENTITY_DIM, ENTITY_FEATURE_NAMES, ObservationBuilder
@@ -110,6 +110,25 @@ def test_radar_report_is_submitted_once_per_policy_step() -> None:
 
     assert env.game.radar_p[0, Team.RED, target] == 15
     assert env.game.radar_report_age_s[0, Team.RED, target] == 0
+
+
+def test_dart_and_radar_pulses_are_submitted_once_per_policy_step() -> None:
+    env = TorchRMArena(TorchEnvConfig(num_envs=1, seed=7))
+    env.game.dart_gate_state[0, Team.RED] = DartGateState.OPEN
+    env.game.dart_gate_timer_s[0, Team.RED] = constants.DART_FIRE_WINDOW_S
+    env.game.dart_detection_s[0, Team.RED] = constants.DART_DETECTION_WINDOW_S
+    actions = WorldActions.zeros(env.game)
+    actions.dart_target[0, Team.RED] = DartTarget.OUTPOST
+    radar_target = slot(Team.BLUE, Role.HERO)
+    actions.radar_target[0, Team.RED] = radar_target
+    actions.radar_report_xy[0, Team.RED] = env.world.position_xy[0, radar_target]
+
+    result = env.step(actions)
+
+    assert result.events.dart_fired[0, Team.RED]
+    assert env.game.dart_rounds[0, Team.RED] == constants.DART_ROUNDS_INITIAL - 1
+    assert env.game.radar_p[0, Team.RED, radar_target] == 1
+    assert env.game.radar_report_age_s[0, Team.RED, radar_target] == 0
 
 
 def test_partial_reset_only_replaces_selected_environment() -> None:

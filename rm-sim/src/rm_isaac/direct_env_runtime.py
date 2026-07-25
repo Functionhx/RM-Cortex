@@ -48,7 +48,7 @@ from rm_world.arena import (
     polygon_area,
     triangulate_polygon,
 )
-from rm_world.backend import TorchRuleBackend
+from rm_world.backend import TorchRuleBackend, mask_intermediate_policy_pulses
 from rm_world.kinematics import KinematicConfig, KinematicState, KinematicWorld
 from rm_world.observations import ObservationBuilder
 from rm_world.rewards import RewardBuilder
@@ -606,9 +606,7 @@ class RMCortexDirectMARLEnv(DirectMARLEnv):
             constants.REFEREE_DT_S,
         )
         if self._physics_substep % self.cfg.decimation != 0:
-            normalized.radar_update.zero_()
-            normalized.radar_report_xy.zero_()
-            normalized.radar_key_solved.zero_()
+            mask_intermediate_policy_pulses(normalized)
         frame = IsaacGeometryFrame(
             shots_fired=normalized.shots_fired,
             hit_source=normalized.hits.source,

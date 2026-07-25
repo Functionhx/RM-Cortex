@@ -17,6 +17,17 @@ from rm_world.arena import (
     TerrainPrimitive,
 )
 from rm_world.backend import TorchRuleBackend
+from rm_world.behavior_controller import (
+    BehaviorNavigationDiagnostics,
+    BehaviorTreeOpponent,
+)
+from rm_world.behavior_tree import (
+    BehaviorTreeTrace,
+    HierarchicalBehaviorTrees,
+    NodeStatus,
+    TeamBlackboard,
+    TeamIntent,
+)
 from rm_world.belief import (
     BeliefConfig,
     EntityBeliefTracker,
@@ -32,6 +43,13 @@ from rm_world.kinematics import (
     KinematicWorld,
 )
 from rm_world.observations import ObservationBuilder, WorldObservation
+from rm_world.pathfinding import (
+    GridAStarPlanner,
+    NavigationGrid,
+    PathResult,
+    PathStatus,
+    team_symmetric_goal,
+)
 from rm_world.rewards import RewardBuilder, RewardConfig
 from rm_world.scripted import (
     AERIAL_SORTIE_WINDOWS_S,
@@ -58,17 +76,26 @@ __all__ = [
     "BLUE_OUTPOST_CENTER_XY",
     "BLUE_SUPPLY_CENTER_XY",
     "BeliefConfig",
+    "BehaviorNavigationDiagnostics",
+    "BehaviorTreeOpponent",
+    "BehaviorTreeTrace",
     "EntityBeliefTracker",
     "EntityBeliefView",
     "EntitySource",
+    "GridAStarPlanner",
     "HitModel",
     "HitModelConfig",
+    "HierarchicalBehaviorTrees",
     "KinematicCommands",
     "KinematicConfig",
     "KinematicState",
     "KinematicWorld",
     "MOBILE_UNIT_SLOTS",
+    "NavigationGrid",
+    "NodeStatus",
     "ObservationBuilder",
+    "PathResult",
+    "PathStatus",
     "RewardBuilder",
     "RewardConfig",
     "RED_AERIAL_PAD_CENTER_XY",
@@ -78,6 +105,8 @@ __all__ = [
     "RED_SUPPLY_CENTER_XY",
     "ScriptedOpponent",
     "TACTICAL_RED_ROUTES",
+    "TeamBlackboard",
+    "TeamIntent",
     "TacticalMission",
     "TacticalPhase",
     "TacticalScriptedOpponent",
@@ -89,6 +118,7 @@ __all__ = [
     "tactical_phase",
     "tactical_phase_label",
     "tactical_route_waypoints",
+    "team_symmetric_goal",
     "WorldActions",
     "WorldObservation",
     "aerial_sortie_state",
