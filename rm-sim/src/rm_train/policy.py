@@ -225,14 +225,12 @@ class SharedMAPPOPolicy(nn.Module):
         entity_mask: Tensor,
         agent_ids: Tensor,
     ) -> tuple[Tensor, ...]:
-        identity, roles, _ = self._identity(agent_ids)
-        entity_context, _ = self.entity_attention(
+        features, roles, _ = self.actor_features(
             observations,
             entities,
             entity_mask,
             agent_ids,
         )
-        features = self.actor_body(torch.cat((observations, identity, entity_context), dim=-1))
         return (
             features,
             roles,
@@ -245,6 +243,29 @@ class SharedMAPPOPolicy(nn.Module):
             self.radar_target_logits(features),
             self.radar_report_mean(features),
         )
+
+    def actor_features(
+        self,
+        observations: Tensor,
+        entities: Tensor,
+        entity_mask: Tensor,
+        agent_ids: Tensor,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """Return shared actor features, role indices, and entity attention.
+
+        This is the stable transfer boundary for auxiliary pretraining. Action
+        heads and the centralized critic intentionally remain outside it.
+        """
+
+        identity, roles, _ = self._identity(agent_ids)
+        entity_context, attention = self.entity_attention(
+            observations,
+            entities,
+            entity_mask,
+            agent_ids,
+        )
+        features = self.actor_body(torch.cat((observations, identity, entity_context), dim=-1))
+        return features, roles, attention
 
     def value(
         self,

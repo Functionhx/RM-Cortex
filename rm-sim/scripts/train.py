@@ -8,6 +8,7 @@ from dataclasses import replace
 import json
 
 from rm_train import MAPPOConfig, MAPPOTrainingRunner
+from rm_train.imitation import load_imitation_actor_checkpoint
 
 
 def main() -> None:
@@ -17,6 +18,10 @@ def main() -> None:
     parser.add_argument("--num-envs", type=int)
     parser.add_argument("--device")
     parser.add_argument("--output-dir")
+    parser.add_argument(
+        "--pretrained-actor",
+        help="RMUC imitation checkpoint whose shared actor backbone initializes MAPPO",
+    )
     args = parser.parse_args()
 
     config = MAPPOConfig.from_json(args.config)
@@ -31,9 +36,13 @@ def main() -> None:
         **{name: value for name, value in overrides.items() if value is not None},
     )
     config.validate()
-    progress, checkpoint = MAPPOTrainingRunner(config).train()
+    runner = MAPPOTrainingRunner(config)
+    if args.pretrained_actor:
+        load_imitation_actor_checkpoint(runner.policy, args.pretrained_actor)
+    progress, checkpoint = runner.train()
     result = {
         "checkpoint": str(checkpoint),
+        "pretrained_actor": bool(args.pretrained_actor),
         "last_update": progress[-1].as_dict(),
     }
     print(json.dumps(result, indent=2, sort_keys=True))
