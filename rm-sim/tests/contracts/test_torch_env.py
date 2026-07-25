@@ -4,9 +4,11 @@ from dataclasses import fields
 
 import torch
 
+from rm_referee import constants
 from rm_referee.schema import Role, Team, slot
 from rm_referee.state import GameState
 from rm_world import ScriptedOpponent, TorchEnvConfig, TorchRMArena, WorldActions
+from rm_world.observations import ENTITY_FEATURE_NAMES, ObservationBuilder
 
 
 def test_end_to_end_torch_environment_returns_masks_rewards_and_events() -> None:
@@ -16,13 +18,56 @@ def test_end_to_end_torch_environment_returns_masks_rewards_and_events() -> None
     result = env.step(actions)
 
     assert result.observation.agents.shape == (2, 16, 34)
-    assert result.observation.entities.shape == (2, 16, 16, 15)
+    assert result.observation.entities.shape == (2, 16, 16, 32)
     assert result.observation.target_mask.shape == (2, 16, 9)
     assert result.reward.shape == (2, 16)
     assert torch.isfinite(result.observation.agents).all()
     assert torch.isfinite(result.reward).all()
     engineer = slot(Team.RED, Role.ENGINEER)
     assert not result.observation.fire_mask[0, engineer]
+
+
+def test_oracle_entity_state_is_retained_outside_visibility() -> None:
+    env = TorchRMArena(TorchEnvConfig(num_envs=1, seed=3))
+    observer = slot(Team.RED, Role.HERO)
+    target = slot(Team.BLUE, Role.HERO)
+    env.world.yaw[0, target] = torch.pi / 2
+    env.world.velocity_xy[0, target] = torch.tensor([1.5, -0.75])
+    env.game.hp[0, target] = env.game.max_hp[0, target] / 2
+    env.game.level[0, target] = 4
+    env.game.xp[0, target] = 1250
+    env.game.heat_limit[0, target] = torch.tensor([100.0, 200.0])
+    env.game.heat[0, target] = torch.tensor([25.0, 50.0])
+    env.game.ammo[0, target] = torch.tensor([375, 150])
+    env.game.chassis_energy[0, target] = constants.CHASSIS_ENERGY_MAX / 2
+    env.game.power_buffer_j[0, target] = constants.POWER_BUFFER_MAX_J / 2
+    env.game.weak[0, target] = True
+    env.game.invulnerable_s[0, target] = 15
+    env.game.vulnerability_fraction[0, target] = 0.25
+    env.game.radar_vulnerability_fraction[0, target] = 0.4
+    env.game.radar_p[0, Team.RED, target] = 75
+
+    observation = ObservationBuilder(
+        arena=env.arena,
+        local_sensor_range_m=0.1,
+    ).build(env.game, env.world)
+    feature = {name: index for index, name in enumerate(ENTITY_FEATURE_NAMES)}
+    entity = observation.entities[0, observer, target]
+
+    assert not observation.entity_mask[0, observer, target]
+    assert entity.shape == (32,)
+    assert entity[feature["target_hp_fraction"]] == 0.5
+    assert entity[feature["target_yaw_sin"]] == 1
+    assert entity[feature["target_velocity_x"]] == 0.5
+    assert entity[feature["target_level_fraction"]] == 0.4
+    assert entity[feature["target_heat_17mm_fraction"]] == 0.25
+    assert entity[feature["target_ammo_17mm_fraction"]] == 0.5
+    assert entity[feature["target_chassis_energy_fraction"]] == 0.5
+    assert entity[feature["target_weak"]] == 1
+    assert entity[feature["target_invulnerable_fraction"]] == 0.5
+    assert entity[feature["target_effective_vulnerability"]] == 0.4
+    assert entity[feature["observer_radar_progress"]] == 0.5
+    assert entity[feature["observer_radar_truth_visible"]] == 0
 
 
 def test_seeded_torch_environments_roll_out_identically() -> None:

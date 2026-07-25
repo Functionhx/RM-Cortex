@@ -38,6 +38,32 @@ def test_radar_updates_x_then_accumulates_p(
     assert current.radar_p[0, Team.RED, target] == pytest.approx(5.2)
 
 
+def test_radar_truth_visibility_uses_own_and_enemy_thresholds(
+    state: GameState,
+    referee: Referee,
+) -> None:
+    own_target = slot(Team.RED, Role.HERO)
+    enemy_target = slot(Team.BLUE, Role.HERO)
+    state.radar_p[0, Team.RED, own_target] = 49
+    state.radar_p[0, Team.RED, enemy_target] = 99
+
+    below_threshold, _ = referee.step(state, RuleInputs.empty(state))
+
+    assert not below_threshold.radar_truth_visible[0, Team.RED, own_target]
+    assert not below_threshold.radar_truth_visible[0, Team.RED, enemy_target]
+
+    below_threshold.radar_p[0, Team.RED, own_target] = 50
+    below_threshold.radar_p[0, Team.RED, enemy_target] = 100
+    at_threshold, _ = referee.step(
+        below_threshold,
+        RuleInputs.empty(below_threshold),
+    )
+
+    assert at_threshold.radar_truth_visible[0, Team.RED, own_target]
+    assert at_threshold.radar_truth_visible[0, Team.RED, enemy_target]
+    assert at_threshold.radar_vulnerability_fraction[0, enemy_target] == pytest.approx(0.15)
+
+
 def test_radar_vulnerability_never_applies_to_aerial(
     state: GameState,
     referee: Referee,

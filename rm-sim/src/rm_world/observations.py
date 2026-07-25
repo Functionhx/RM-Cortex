@@ -1,4 +1,4 @@
-"""Partially observed entity tensors and deterministic action masks."""
+"""Oracle entity tensors, visibility metadata, and deterministic action masks."""
 
 from __future__ import annotations
 
@@ -15,6 +15,43 @@ from rm_world.geometry import NO_TARGET, RUNE_TARGET, resolve_target_slots
 from rm_world.kinematics import KinematicState
 
 
+ENTITY_FEATURE_NAMES = (
+    "relative_x",
+    "relative_y",
+    "relative_z",
+    "distance_xy",
+    "target_yaw_sin",
+    "target_yaw_cos",
+    "target_velocity_x",
+    "target_velocity_y",
+    "target_hp_fraction",
+    "target_alive",
+    "target_level_fraction",
+    "target_xp_fraction",
+    "target_heat_17mm_fraction",
+    "target_heat_42mm_fraction",
+    "target_ammo_17mm_fraction",
+    "target_ammo_42mm_fraction",
+    "target_chassis_energy_fraction",
+    "target_power_buffer_fraction",
+    "target_weak",
+    "target_invulnerable_fraction",
+    "target_effective_vulnerability",
+    "observer_radar_progress",
+    "observer_radar_truth_visible",
+    "same_team",
+    "target_role_hero",
+    "target_role_engineer",
+    "target_role_infantry_3",
+    "target_role_infantry_4",
+    "target_role_aerial",
+    "target_role_sentry",
+    "target_role_base",
+    "target_role_outpost",
+)
+ENTITY_DIM = len(ENTITY_FEATURE_NAMES)
+
+
 @dataclass
 class WorldObservation:
     agents: Tensor
@@ -26,7 +63,11 @@ class WorldObservation:
 
 
 class ObservationBuilder:
-    """Build actor-visible observations and a privileged critic state."""
+    """Build full-truth entity observations and a privileged critic state.
+
+    ``entities`` always contains oracle state; ``entity_mask`` separately records
+    which observer-target pairs are legally visible.
+    """
 
     def __init__(
         self,
@@ -43,7 +84,7 @@ class ObservationBuilder:
 
     @property
     def entity_dim(self) -> int:
-        return 15
+        return ENTITY_DIM
 
     def build(self, game: GameState, world: KinematicState) -> WorldObservation:
         roles = unit_roles(game.device)
@@ -100,6 +141,7 @@ class ObservationBuilder:
         )
         same_team = teams[:, None] == teams[None, :]
         target_is_building = (roles == Role.BASE) | (roles == Role.OUTPOST)
+        # V1.5.0 pp. 117–119: radar-confirmed truth is scoped to the observing team.
         radar_visible = game.radar_truth_visible[:, teams, :]
         visible = (
             same_team[None, :, :]
@@ -113,15 +155,80 @@ class ObservationBuilder:
             roles,
             constants.ROLES_PER_TEAM,
         ).to(game.dtype)
+        target_yaw = world.yaw[:, None, :].expand(
+            -1,
+            constants.UNIT_COUNT,
+            -1,
+        )
+        target_velocity = world.velocity_xy[:, None, :, :].expand(
+            -1,
+            constants.UNIT_COUNT,
+            -1,
+            -1,
+        )
         target_hp = hp_fraction[:, None, :].expand(-1, constants.UNIT_COUNT, -1)
         target_alive = game.alive[:, None, :].expand(-1, constants.UNIT_COUNT, -1)
+        target_level = game.level[:, None, :].expand(-1, constants.UNIT_COUNT, -1)
+        target_xp = game.xp[:, None, :].expand(-1, constants.UNIT_COUNT, -1)
+        target_heat = heat_fraction[:, None, :, :].expand(
+            -1,
+            constants.UNIT_COUNT,
+            -1,
+            -1,
+        )
+        target_ammo = game.ammo[:, None, :, :].expand(
+            -1,
+            constants.UNIT_COUNT,
+            -1,
+            -1,
+        )
+        target_chassis_energy = game.chassis_energy[:, None, :].expand(
+            -1,
+            constants.UNIT_COUNT,
+            -1,
+        )
+        target_power_buffer = game.power_buffer_j[:, None, :].expand(
+            -1,
+            constants.UNIT_COUNT,
+            -1,
+        )
+        target_weak = game.weak[:, None, :].expand(-1, constants.UNIT_COUNT, -1)
+        target_invulnerable = game.invulnerable_s[:, None, :].expand(
+            -1,
+            constants.UNIT_COUNT,
+            -1,
+        )
+        effective_vulnerability = torch.maximum(
+            game.vulnerability_fraction,
+            game.radar_vulnerability_fraction,
+        )
+        target_vulnerability = effective_vulnerability[:, None, :].expand(
+            -1,
+            constants.UNIT_COUNT,
+            -1,
+        )
+        observer_radar_progress = game.radar_p[:, teams, :]
         entity_parts = (
             relative[..., 0:1] / 28.0,
             relative[..., 1:2] / 15.0,
             (world.position_z[:, None, :] - world.position_z[:, :, None])[..., None] / 5.0,
             (distance / 31.0)[..., None],
+            torch.sin(target_yaw)[..., None],
+            torch.cos(target_yaw)[..., None],
+            target_velocity / 3.0,
             target_hp[..., None],
             target_alive.to(game.dtype)[..., None],
+            target_level.to(game.dtype)[..., None] / 10.0,
+            target_xp[..., None] / 5000.0,
+            target_heat,
+            torch.clamp(target_ammo.to(game.dtype) / 750.0, max=1.0),
+            target_chassis_energy[..., None] / constants.CHASSIS_ENERGY_MAX,
+            target_power_buffer[..., None] / constants.POWER_BUFFER_MAX_J,
+            target_weak.to(game.dtype)[..., None],
+            torch.clamp(target_invulnerable[..., None] / 30.0, max=1.0),
+            target_vulnerability[..., None],
+            (observer_radar_progress / 150.0)[..., None],
+            radar_visible.to(game.dtype)[..., None],
             same_team[None, :, :, None].to(game.dtype).expand(game.num_envs, -1, -1, -1),
             target_role[None, None, :, :].expand(
                 game.num_envs,
@@ -131,11 +238,6 @@ class ObservationBuilder:
             ),
         )
         entities = torch.cat(entity_parts, dim=-1)
-        entities = torch.where(
-            visible[..., None],
-            entities,
-            torch.zeros_like(entities),
-        )
 
         choice = (
             torch.arange(9, device=game.device)

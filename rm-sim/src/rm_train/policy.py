@@ -11,6 +11,7 @@ from torch.distributions import Bernoulli, Categorical, Normal
 from rm_referee import constants
 from rm_referee.schema import Role
 from rm_world.geometry import NO_TARGET
+from rm_world.observations import ENTITY_DIM
 
 
 @dataclass
@@ -93,23 +94,35 @@ def _mlp(input_dim: int, hidden_dim: int, output_dim: int) -> nn.Sequential:
 class SharedMAPPOPolicy(nn.Module):
     """One actor for all roles and a privileged per-agent value function."""
 
+    CHECKPOINT_SCHEMA_VERSION = 2
+
     def __init__(
         self,
         *,
         observation_dim: int = 34,
+        entity_dim: int = ENTITY_DIM,
         state_dim: int = 117,
         hidden_dim: int = 128,
         role_embedding_dim: int = 16,
     ) -> None:
         super().__init__()
         self.observation_dim = observation_dim
+        self.entity_dim = entity_dim
         self.state_dim = state_dim
         self.role_embedding = nn.Embedding(constants.ROLES_PER_TEAM, role_embedding_dim)
         self.team_embedding = nn.Embedding(constants.TEAM_COUNT, role_embedding_dim // 2)
         identity_dim = role_embedding_dim + role_embedding_dim // 2
 
+        self.entity_encoder = _mlp(
+            entity_dim + 1,
+            hidden_dim,
+            hidden_dim,
+        )
+        self.entity_query = nn.Linear(observation_dim + identity_dim, hidden_dim)
+        self.entity_key = nn.Linear(hidden_dim, hidden_dim)
+        self.entity_value = nn.Linear(hidden_dim, hidden_dim)
         self.actor_body = _mlp(
-            observation_dim + identity_dim,
+            observation_dim + identity_dim + hidden_dim,
             hidden_dim,
             hidden_dim,
         )
@@ -129,6 +142,17 @@ class SharedMAPPOPolicy(nn.Module):
             hidden_dim,
             1,
         )
+
+    def architecture_kwargs(self) -> dict[str, int]:
+        """Return the constructor arguments required to reload this policy."""
+
+        return {
+            "observation_dim": self.observation_dim,
+            "entity_dim": self.entity_dim,
+            "state_dim": self.state_dim,
+            "hidden_dim": self.entity_query.out_features,
+            "role_embedding_dim": self.role_embedding.embedding_dim,
+        }
 
     @staticmethod
     def default_agent_ids(
@@ -151,15 +175,61 @@ class SharedMAPPOPolicy(nn.Module):
         )
         return identity, roles, teams
 
+    def entity_attention(
+        self,
+        observations: Tensor,
+        entities: Tensor,
+        entity_mask: Tensor,
+        agent_ids: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor]:
+        """Encode all entity truths while retaining visibility as a source feature."""
+
+        if observations.shape[-1] != self.observation_dim:
+            raise ValueError("actor observation dimension does not match the policy")
+        if entities.ndim != observations.ndim + 1:
+            raise ValueError("entities need one target axis beyond the actor observations")
+        if entities.shape[:-2] != observations.shape[:-1]:
+            raise ValueError("entity batch axes must match the actor observations")
+        if entities.shape[-2] != constants.UNIT_COUNT:
+            raise ValueError("the entity target axis must contain the 16 unit slots")
+        if entities.shape[-1] != self.entity_dim:
+            raise ValueError("entity feature dimension does not match the policy")
+        if entity_mask.shape != entities.shape[:-1]:
+            raise ValueError("entity mask must match the entity batch and target axes")
+        if entity_mask.dtype is not torch.bool:
+            raise ValueError("entity mask must use bool dtype")
+        if agent_ids is None:
+            agent_ids = self.default_agent_ids(observations.shape[:-1], observations.device)
+        if agent_ids.shape != observations.shape[:-1]:
+            raise ValueError("agent ids must match the actor observation batch axes")
+
+        identity, _, _ = self._identity(agent_ids)
+        actor_input = torch.cat((observations, identity), dim=-1)
+        source_feature = entity_mask.to(entities.dtype).unsqueeze(-1)
+        encoded = self.entity_encoder(torch.cat((entities, source_feature), dim=-1))
+        query = self.entity_query(actor_input).unsqueeze(-2)
+        keys = self.entity_key(encoded)
+        values = self.entity_value(encoded)
+        scale = float(keys.shape[-1]) ** -0.5
+        weights = torch.softmax((query * keys).sum(dim=-1) * scale, dim=-1)
+        context = (weights.unsqueeze(-1) * values).sum(dim=-2)
+        return context, weights
+
     def _actor_outputs(
         self,
         observations: Tensor,
+        entities: Tensor,
+        entity_mask: Tensor,
         agent_ids: Tensor,
     ) -> tuple[Tensor, ...]:
-        if observations.shape[-1] != self.observation_dim:
-            raise ValueError("actor observation dimension does not match the policy")
         identity, roles, _ = self._identity(agent_ids)
-        features = self.actor_body(torch.cat((observations, identity), dim=-1))
+        entity_context, _ = self.entity_attention(
+            observations,
+            entities,
+            entity_mask,
+            agent_ids,
+        )
+        features = self.actor_body(torch.cat((observations, identity, entity_context), dim=-1))
         return (
             features,
             roles,
@@ -214,6 +284,8 @@ class SharedMAPPOPolicy(nn.Module):
     def _distributions(
         self,
         observations: Tensor,
+        entities: Tensor,
+        entity_mask: Tensor,
         agent_ids: Tensor,
         target_mask: Tensor,
     ) -> tuple[PolicyDistributions, Tensor]:
@@ -228,7 +300,7 @@ class SharedMAPPOPolicy(nn.Module):
             mode_logits,
             radar_target_logits,
             radar_offset_mean,
-        ) = self._actor_outputs(observations, agent_ids)
+        ) = self._actor_outputs(observations, entities, entity_mask, agent_ids)
         if target_mask.shape != (*agent_ids.shape, 9):
             raise ValueError("target mask must end in the nine-class target schema")
         if torch.any(~target_mask.any(dim=-1)):
@@ -251,6 +323,8 @@ class SharedMAPPOPolicy(nn.Module):
     def act(
         self,
         observations: Tensor,
+        entities: Tensor,
+        entity_mask: Tensor,
         central_state: Tensor,
         target_mask: Tensor,
         fire_mask: Tensor,
@@ -260,7 +334,13 @@ class SharedMAPPOPolicy(nn.Module):
     ) -> PolicyStep:
         if agent_ids is None:
             agent_ids = self.default_agent_ids(observations.shape[:-1], observations.device)
-        distributions, roles = self._distributions(observations, agent_ids, target_mask)
+        distributions, roles = self._distributions(
+            observations,
+            entities,
+            entity_mask,
+            agent_ids,
+            target_mask,
+        )
         if deterministic:
             action = PolicyAction(
                 motion=distributions.motion.mean,
@@ -301,13 +381,21 @@ class SharedMAPPOPolicy(nn.Module):
     def evaluate_actions(
         self,
         observations: Tensor,
+        entities: Tensor,
+        entity_mask: Tensor,
         central_state: Tensor,
         target_mask: Tensor,
         fire_mask: Tensor,
         actions: PolicyAction,
         agent_ids: Tensor,
     ) -> PolicyStep:
-        distributions, roles = self._distributions(observations, agent_ids, target_mask)
+        distributions, roles = self._distributions(
+            observations,
+            entities,
+            entity_mask,
+            agent_ids,
+            target_mask,
+        )
         log_prob, entropy = self._score(distributions, roles, fire_mask, actions)
         return PolicyStep(
             action=actions,

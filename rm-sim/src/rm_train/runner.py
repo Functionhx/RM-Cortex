@@ -81,6 +81,8 @@ class MAPPOTrainingRunner:
             with torch.no_grad():
                 policy_step = self.policy.act(
                     current.agents,
+                    current.entities,
+                    current.entity_mask,
                     current.central,
                     current.target_mask,
                     current.fire_mask,
@@ -93,6 +95,8 @@ class MAPPOTrainingRunner:
             result = self.environment.step(world_action)
             storage.add(
                 observations=current.agents,
+                entities=current.entities,
+                entity_mask=current.entity_mask,
                 central_state=current.central,
                 target_mask=current.target_mask,
                 fire_mask=current.fire_mask,
@@ -135,6 +139,8 @@ class MAPPOTrainingRunner:
         destination.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
             {
+                "policy_schema_version": self.policy.CHECKPOINT_SCHEMA_VERSION,
+                "policy_kwargs": self.policy.architecture_kwargs(),
                 "policy": self.policy.state_dict(),
                 "optimizer": self.algorithm.optimizer.state_dict(),
                 "config": self.config.to_dict(),

@@ -69,6 +69,8 @@ def evaluate_against_scripted(
     for steps_taken in range(1, max_policy_steps + 1):
         policy_step = policy.act(
             observation.agents,
+            observation.entities,
+            observation.entity_mask,
             observation.central,
             observation.target_mask,
             observation.fire_mask,

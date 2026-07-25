@@ -14,6 +14,8 @@ from rm_train.policy import PolicyAction
 @dataclass
 class FlatRolloutBatch:
     observations: Tensor
+    entities: Tensor
+    entity_mask: Tensor
     central_state: Tensor
     target_mask: Tensor
     fire_mask: Tensor
@@ -31,6 +33,8 @@ class FlatRolloutBatch:
     def take(self, indices: Tensor) -> "FlatRolloutBatch":
         return FlatRolloutBatch(
             observations=self.observations[indices],
+            entities=self.entities[indices],
+            entity_mask=self.entity_mask[indices],
             central_state=self.central_state[indices],
             target_mask=self.target_mask[indices],
             fire_mask=self.fire_mask[indices],
@@ -46,6 +50,8 @@ class FlatRolloutBatch:
 @dataclass
 class RolloutBatch:
     observations: Tensor
+    entities: Tensor
+    entity_mask: Tensor
     central_state: Tensor
     target_mask: Tensor
     fire_mask: Tensor
@@ -70,6 +76,8 @@ class RolloutBatch:
         )
         return FlatRolloutBatch(
             observations=self.observations.reshape(-1, self.observations.shape[-1]),
+            entities=self.entities.reshape(-1, *self.entities.shape[-2:]),
+            entity_mask=self.entity_mask.reshape(-1, self.entity_mask.shape[-1]),
             central_state=central.reshape(-1, central.shape[-1]),
             target_mask=self.target_mask.reshape(-1, self.target_mask.shape[-1]),
             fire_mask=self.fire_mask.reshape(-1),
@@ -85,6 +93,8 @@ class RolloutBatch:
 @dataclass
 class RolloutStorage:
     observations: list[Tensor] = field(default_factory=list)
+    entities: list[Tensor] = field(default_factory=list)
+    entity_mask: list[Tensor] = field(default_factory=list)
     central_state: list[Tensor] = field(default_factory=list)
     target_mask: list[Tensor] = field(default_factory=list)
     fire_mask: list[Tensor] = field(default_factory=list)
@@ -98,6 +108,8 @@ class RolloutStorage:
         self,
         *,
         observations: Tensor,
+        entities: Tensor,
+        entity_mask: Tensor,
         central_state: Tensor,
         target_mask: Tensor,
         fire_mask: Tensor,
@@ -108,6 +120,8 @@ class RolloutStorage:
         done: Tensor,
     ) -> None:
         self.observations.append(observations.detach())
+        self.entities.append(entities.detach())
+        self.entity_mask.append(entity_mask.detach())
         self.central_state.append(central_state.detach())
         self.target_mask.append(target_mask.detach())
         self.fire_mask.append(fire_mask.detach())
@@ -150,6 +164,8 @@ class RolloutStorage:
             raise ValueError("rollout reward must use the 16-agent layout")
         return RolloutBatch(
             observations=torch.stack(self.observations),
+            entities=torch.stack(self.entities),
+            entity_mask=torch.stack(self.entity_mask),
             central_state=torch.stack(self.central_state),
             target_mask=torch.stack(self.target_mask),
             fire_mask=torch.stack(self.fire_mask),

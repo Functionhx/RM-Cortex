@@ -22,10 +22,16 @@ def main() -> None:
     payload = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     config = MAPPOConfig(**payload["config"])
     device = config.resolved_device if args.device == "auto" else args.device
-    policy = SharedMAPPOPolicy(
-        hidden_dim=config.hidden_dim,
-        role_embedding_dim=config.role_embedding_dim,
-    )
+    schema_version = payload.get("policy_schema_version", 1)
+    if schema_version != SharedMAPPOPolicy.CHECKPOINT_SCHEMA_VERSION:
+        raise RuntimeError(
+            "checkpoint policy schema is incompatible with the full-entity actor; "
+            "retrain it or migrate the checkpoint"
+        )
+    policy_kwargs = payload.get("policy_kwargs")
+    if not isinstance(policy_kwargs, dict):
+        raise RuntimeError("checkpoint is missing policy architecture metadata")
+    policy = SharedMAPPOPolicy(**policy_kwargs)
     policy.load_state_dict(payload["policy"])
     report = evaluate_against_scripted(
         policy,

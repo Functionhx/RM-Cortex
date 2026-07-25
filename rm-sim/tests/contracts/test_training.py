@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import torch
 
@@ -8,11 +9,52 @@ from rm_referee.schema import Role, Team, slot
 from rm_train import (
     MAPPOConfig,
     MAPPOTrainingRunner,
+    PolicyAction,
+    RolloutBatch,
     SharedMAPPOPolicy,
     decode_policy_actions,
     evaluate_against_scripted,
 )
 from rm_world import TorchEnvConfig, TorchRMArena
+
+
+def test_rollout_flatten_preserves_entity_axes() -> None:
+    time_steps, num_envs, num_agents, entity_dim = 2, 3, 16, 7
+    rollout_shape = (time_steps, num_envs, num_agents)
+    actions = PolicyAction(
+        motion=torch.zeros(*rollout_shape, 4),
+        target=torch.zeros(rollout_shape, dtype=torch.long),
+        fire=torch.zeros(rollout_shape, dtype=torch.bool),
+        common=torch.zeros(*rollout_shape, 2, dtype=torch.bool),
+        special=torch.zeros(*rollout_shape, 3, dtype=torch.bool),
+        mode=torch.zeros(rollout_shape, dtype=torch.long),
+        radar_target=torch.zeros(rollout_shape, dtype=torch.long),
+        radar_offset=torch.zeros(*rollout_shape, 2),
+    )
+    entities = torch.arange(
+        time_steps * num_envs * num_agents * num_agents * entity_dim,
+    ).reshape(*rollout_shape, num_agents, entity_dim)
+    entity_mask = torch.ones(*rollout_shape, num_agents, dtype=torch.bool)
+    rollout = RolloutBatch(
+        observations=torch.zeros(*rollout_shape, 34),
+        entities=entities,
+        entity_mask=entity_mask,
+        central_state=torch.zeros(time_steps, num_envs, 117),
+        target_mask=torch.ones(*rollout_shape, 9, dtype=torch.bool),
+        fire_mask=torch.ones(rollout_shape, dtype=torch.bool),
+        actions=actions,
+        old_log_prob=torch.zeros(rollout_shape),
+        old_value=torch.zeros(rollout_shape),
+        returns=torch.zeros(rollout_shape),
+        advantages=torch.zeros(rollout_shape),
+    )
+
+    flat = rollout.flatten()
+
+    assert flat.entities.shape == (time_steps * num_envs * num_agents, num_agents, entity_dim)
+    assert flat.entity_mask.shape == (time_steps * num_envs * num_agents, num_agents)
+    assert torch.equal(flat.entities[16], entities[0, 1, 0])
+    assert torch.equal(flat.entity_mask, torch.ones_like(flat.entity_mask))
 
 
 def test_policy_sampling_respects_dynamic_masks_and_decodes_roles() -> None:
@@ -23,6 +65,8 @@ def test_policy_sampling_respects_dynamic_masks_and_decodes_roles() -> None:
 
     step = policy.act(
         observation.agents,
+        observation.entities,
+        observation.entity_mask,
         observation.central,
         observation.target_mask,
         observation.fire_mask,
@@ -36,6 +80,21 @@ def test_policy_sampling_respects_dynamic_masks_and_decodes_roles() -> None:
     assert not torch.any(step.action.fire & ~observation.fire_mask)
     assert step.log_prob.shape == (2, 16)
     assert step.value.shape == (2, 16)
+    agent_ids = policy.default_agent_ids(
+        observation.agents.shape[:-1],
+        observation.agents.device,
+    )
+    evaluated = policy.evaluate_actions(
+        observation.agents,
+        observation.entities,
+        observation.entity_mask,
+        observation.central,
+        observation.target_mask,
+        observation.fire_mask,
+        step.action,
+        agent_ids,
+    )
+    assert torch.allclose(evaluated.log_prob, step.log_prob)
 
     actions = decode_policy_actions(
         environment.game,
@@ -50,7 +109,7 @@ def test_policy_sampling_respects_dynamic_masks_and_decodes_roles() -> None:
     assert actions.radar_target.shape == (2, 2)
 
 
-def test_tiny_mappo_update_is_finite_and_changes_parameters() -> None:
+def test_tiny_mappo_update_is_finite_and_changes_parameters(tmp_path: Path) -> None:
     config = MAPPOConfig(
         num_envs=2,
         rollout_steps=2,
@@ -63,6 +122,11 @@ def test_tiny_mappo_update_is_finite_and_changes_parameters() -> None:
     )
     runner = MAPPOTrainingRunner(config)
     before = [parameter.detach().clone() for parameter in runner.policy.parameters()]
+    entity_before = {
+        name: parameter.detach().clone()
+        for name, parameter in runner.policy.named_parameters()
+        if name.startswith("entity_")
+    }
 
     progress = runner.train_update()
 
@@ -73,6 +137,14 @@ def test_tiny_mappo_update_is_finite_and_changes_parameters() -> None:
         not torch.equal(previous, current)
         for previous, current in zip(before, runner.policy.parameters(), strict=True)
     )
+    assert any(
+        not torch.equal(previous, dict(runner.policy.named_parameters())[name])
+        for name, previous in entity_before.items()
+    )
+    checkpoint = runner.save_checkpoint(tmp_path / "entity_policy.pt")
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    assert payload["policy_schema_version"] == runner.policy.CHECKPOINT_SCHEMA_VERSION
+    assert payload["policy_kwargs"] == runner.policy.architecture_kwargs()
 
 
 def test_evaluation_reports_unfinished_short_smoke_rollout() -> None:

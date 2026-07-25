@@ -49,9 +49,15 @@ pytest -q
 python scripts/train.py --updates 1 --num-envs 8
 ```
 
-当前实现已经包含向量化裁判、带 LOS 与装甲几何的 2.5D Torch 场地、目标优先与分角色战术两类脚本基线、可安全选装的 Isaac Lab `DirectMARLEnv`，以及带集中式 critic、动作掩码、checkpoint 和评估流程的参数共享 MAPPO 基线。
+当前实现已经包含向量化裁判、带 LOS 与装甲几何的 2.5D Torch 场地、目标优先与分角色战术两类脚本基线、可安全选装的 Isaac Lab `DirectMARLEnv`，以及带集中式 critic、实体注意力、动作掩码、checkpoint 和评估流程的参数共享 MAPPO 基线。
 
 使用 `python scripts/benchmark_world.py --num-envs 1024 4096` 测量 Torch World 吞吐；在 Isaac Lab 启动环境中使用 `PYTHONPATH=src /path/to/IsaacLab/isaaclab.sh -p scripts/isaac_smoke.py --headless` 验证可选场景后端。
+
+## 观测模型与雷达
+
+当前 MAPPO actor 是明确的 **oracle 基线**：每个观察者都会对全部 16 个单位槽的 32 维决策相关状态做注意力汇聚。独立的可见性张量记录每项真值是否合法可知，实体特征同时包含雷达标记进度与雷达确认真值标志。它用于测量全信息性能上界，不代表可部署感知。下一阶段会把观测范围外的敌方真值替换成估计均值、观测时延与半正定协方差，并保持实体张量轴不变。
+
+雷达系统与场内前哨站不是同一个设施。按手册 5.6.6 节，准确/半准确上报会累积标记进度；敌方目标在 `P >= 100` 时显示确认位置，地面机器人在 `P >= 100/120` 时分别获得 15%/20% 易伤。实现还覆盖双倍易伤、干扰压制和激光反制空中机器人。MAPPO 当前只借用前哨站策略槽承载队伍级雷达指令，裁判层的雷达动作仍然是队伍级状态。
 
 ## 可视化
 

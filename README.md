@@ -52,9 +52,15 @@ pytest -q
 python scripts/train.py --updates 1 --num-envs 8
 ```
 
-The implementation now includes the vectorized referee, a 2.5D Torch arena with LOS and armor geometry, objective and role-specific tactical scripted baselines, an import-safe Isaac Lab `DirectMARLEnv`, and a parameter-shared MAPPO baseline with centralized critic, action masks, checkpoints, and evaluation.
+The implementation now includes the vectorized referee, a 2.5D Torch arena with LOS and armor geometry, objective and role-specific tactical scripted baselines, an import-safe Isaac Lab `DirectMARLEnv`, and a parameter-shared MAPPO baseline with centralized critic, entity attention, action masks, checkpoints, and evaluation.
 
 Run `python scripts/benchmark_world.py --num-envs 1024 4096` for Torch-world throughput. Inside an Isaac Lab launcher environment, run `PYTHONPATH=src /path/to/IsaacLab/isaaclab.sh -p scripts/isaac_smoke.py --headless` to validate the optional scene backend.
+
+## Observation model and radar
+
+The current MAPPO actor is an explicit **oracle baseline**: every observer attends over 32 decision-relevant features for all 16 unit slots. A separate visibility tensor records whether each state is legally known, and radar progress and radar-confirmed truth are included as source features. This provides a measurable full-information upper bound. The next partial-observation stage will replace out-of-range enemy truth with a belief mean, observation age, and positive-semidefinite covariance while preserving the same entity axes.
+
+The radar system is distinct from the battlefield outpost. Following manual section 5.6.6, accurate or partially accurate reports build marking progress; confirmed enemy positions appear at `P >= 100`, with 15%/20% ground vulnerability at `P >= 100/120`. The implementation also covers double vulnerability, interference suppression, and aerial laser countermeasures. The MAPPO action layout currently uses the outpost policy slot only as the carrier for team-level radar commands; the referee actions themselves remain team-scoped.
 
 ## Visualization
 

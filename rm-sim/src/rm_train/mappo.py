@@ -55,6 +55,8 @@ class MAPPO:
                 sample = batch.take(indices)
                 evaluated = self.policy.evaluate_actions(
                     sample.observations,
+                    sample.entities,
+                    sample.entity_mask,
                     sample.central_state,
                     sample.target_mask,
                     sample.fire_mask,
