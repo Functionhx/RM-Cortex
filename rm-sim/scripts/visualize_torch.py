@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export a scripted RM-Cortex match as an H.264 MP4."""
+"""Export an RM-Cortex controller matchup as an H.264 MP4."""
 
 from __future__ import annotations
 
@@ -13,7 +13,9 @@ import torch
 
 from rm_referee import constants
 from rm_referee.schema import Role, Team, Winner, unit_roles, unit_teams
+from rm_train.actions import replace_team_actions
 from rm_world import (
+    BehaviorTreeOpponent,
     TacticalScriptedOpponent,
     TorchEnvConfig,
     TorchRMArena,
@@ -61,6 +63,10 @@ SLOPE_LABELS = {
     "red_fly_ramp": "FLY · 17°",
     "blue_fly_ramp": "FLY · 17°",
 }
+CONTROLLER_LABELS = {
+    "behavior-tree": "BT + 50MM A*",
+    "tactical": "TACTICAL",
+}
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -86,8 +92,29 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--fps", type=int, default=20, help="MP4 playback frame rate.")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument(
+        "--red-controller",
+        choices=tuple(CONTROLLER_LABELS),
+        default="tactical",
+    )
+    parser.add_argument(
+        "--blue-controller",
+        choices=tuple(CONTROLLER_LABELS),
+        default="tactical",
+    )
     parser.add_argument("--output", default="outputs/torch_demo.mp4")
     return parser
+
+
+def _controller(
+    name: str,
+    environment: TorchRMArena,
+) -> BehaviorTreeOpponent | TacticalScriptedOpponent:
+    if name == "behavior-tree":
+        return BehaviorTreeOpponent(arena=environment.arena)
+    if name == "tactical":
+        return TacticalScriptedOpponent(arena=environment.arena)
+    raise ValueError(f"unsupported controller: {name}")
 
 
 def _font(size: int, *, bold: bool = False) -> object:
@@ -580,7 +607,12 @@ def main() -> None:
             validate_referee=False,
         )
     )
-    opponent = TacticalScriptedOpponent(arena=environment.arena)
+    red_controller = _controller(args.red_controller, environment)
+    blue_controller = _controller(args.blue_controller, environment)
+    matchup_label = (
+        f"{CONTROLLER_LABELS[args.red_controller]} RED"
+        f" vs {CONTROLLER_LABELS[args.blue_controller]} BLUE"
+    )
     environment.reset(seed=args.seed)
     total_steps = (
         args.steps
@@ -617,7 +649,17 @@ def main() -> None:
 
     simulated_steps = 0
     for policy_step in range(total_steps):
-        actions = opponent.act(environment.game, environment.world)
+        actions = red_controller.act(
+            environment.game,
+            environment.world,
+            team=Team.RED,
+        )
+        blue_actions = blue_controller.act(
+            environment.game,
+            environment.world,
+            team=Team.BLUE,
+        )
+        replace_team_actions(actions, blue_actions, Team.BLUE)
         source_xy = environment.world.position_xy[0].detach().cpu()
         target_slots = resolve_target_slots(actions.target)[0]
         firing = actions.fire[0] & (target_slots >= 0)
@@ -685,7 +727,7 @@ def main() -> None:
         draw.text(
             (CANVAS[0] // 2, 67),
             (
-                f"TACTICAL SCRIPTED BASELINE · {tactical_phase_label(elapsed)} · "
+                f"{matchup_label} · {tactical_phase_label(elapsed)} · "
                 f"AIR {air_status} · {replay_speed:.0f}×"
             ),
             fill=(114, 139, 151),
