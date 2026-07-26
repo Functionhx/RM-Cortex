@@ -23,6 +23,24 @@ BLUE_OUTPOST_CENTER_XY = (3.008, 3.857)
 RED_FORTRESS_CENTER_XY = (-7.400, 0.0)
 BLUE_FORTRESS_CENTER_XY = (7.400, 0.0)
 
+# Published physical dimensions used by simulation diagnostics and
+# visualization. These are not collision radii or referee-zone dimensions.
+# Figure 4-9 gives the base as 1609mm front-to-back by 1881mm laterally;
+# figure 4-5 places its front along the field x-axis. The figure does not give
+# the reference point needed to place its asymmetric outline about the base
+# center, so Phase 1 uses only these axis-aligned plan bounds.
+BASE_PEDESTAL_SIZE_XY_M = (1.609, 1.881)
+# Figure 4-33 publishes a 550mm body diameter, but only one 650mm pedestal
+# width in elevation. The latter must not be treated as a 650x650mm footprint.
+OUTPOST_BODY_DIAMETER_M = 0.550
+OUTPOST_PEDESTAL_WIDTH_M = 0.650
+# Figure 4-16 separates the complete outer structure envelope from the
+# landing octagon. The 1334mm dimensions are the octagon's horizontal and
+# vertical straight-edge lengths, not a second projection footprint.
+AERIAL_PAD_OUTER_ENVELOPE_SIZE_XY_M = (2.200, 2.858)
+AERIAL_PAD_LANDING_SIZE_XY_M = (2.149, 2.200)
+AERIAL_PAD_LANDING_STRAIGHT_EDGE_M = 1.334
+
 # Figure 4-5 does not separately dimension these centers. They are digitized
 # from the dimensioned plan and therefore remain explicit [SIM] placements.
 RED_AERIAL_PAD_CENTER_XY = (-12.52, 5.68)
@@ -38,6 +56,19 @@ AERIAL_FORWARD_LIMIT_M = 2.4
 AERIAL_CORRIDOR_MIN_Y_M = 3.0
 AERIAL_CORRIDOR_MAX_Y_M = 7.1
 
+# Phase 1 [SIM] axis-aligned rule-region envelopes, ordered by ``Zone``.
+# Keep these separate from the published physical structures above.
+ZONE_HALF_EXTENTS_XY_M: tuple[tuple[float, float], ...] = (
+    (1.30, 1.20),  # supply
+    (1.10, 1.00),  # base
+    (2.60, 2.00),  # central high
+    (1.30, 1.20),  # trapezoid-high gain point
+    (1.20, 1.20),  # outpost
+    (1.12, 0.97),  # own fortress
+    (1.12, 0.97),  # enemy fortress
+    (1.20, 1.10),  # assembly
+)
+
 
 def _center_symmetric(
     footprint: tuple[tuple[float, float], ...],
@@ -49,10 +80,11 @@ def _center_symmetric(
 
 @dataclass(frozen=True)
 class TerrainPrimitive:
-    """Diagram-derived ``[SIM]`` terrain surface.
+    """Rule-manual terrain surface with explicit simulation approximations.
 
-    Dimensions and slopes follow rule-manual figures 4-5 and 4-25--4-37.
-    Placements remain approximate until official CAD/USD assets are available.
+    Values called out by rule-manual figures 4-5 and 4-25--4-37 use their
+    published dimensions. Unlabelled placements and subdivisions remain
+    ``[SIM]`` or ``[AMB]`` until official CAD/USD assets are available.
     Elevation normally changes along the primitive's local x-axis. Polygonal
     slope patches can instead provide one elevation per footprint vertex.
     """
@@ -206,23 +238,74 @@ _RED_ASSEMBLY_FOOTPRINT = (
     (0.10, -0.35),
     (-0.85, -0.20),
 )
+
+# Manual V1.5.0 figure 4-26, printed p.53 (PDF p.54), publishes the outer
+# horizontal chain as 300+6707+3798=10805mm. The 10505mm span starts at the
+# inset red line and is not the complete physical envelope. The red-side
+# global anchor remains a figure 4-5 digitization [SIM].
+_TRAPEZOID_OUTER_STRIP_M = 0.300
+_TRAPEZOID_SIZE_XY_M = (0.300 + 6.707 + 3.798, 4.380)
+_TRAPEZOID_INNER_TOP_CHAIN_M = 6.707
+_TRAPEZOID_DIAGONAL_FOOT_M = 4.440
+_TRAPEZOID_STEP_M = 1.003
+_RED_TRAPEZOID_INNER_MIN_X_M = -10.805
+_RED_TRAPEZOID_MIN_X_M = _RED_TRAPEZOID_INNER_MIN_X_M - _TRAPEZOID_OUTER_STRIP_M
+_RED_TRAPEZOID_MAX_Y_M = 7.400
+_RED_TRAPEZOID_MAX_X_M = _RED_TRAPEZOID_INNER_MIN_X_M + 6.707 + 3.798
+_RED_TRAPEZOID_MIN_Y_M = _RED_TRAPEZOID_MAX_Y_M - _TRAPEZOID_SIZE_XY_M[1]
 _RED_TRAPEZOID_FOOTPRINT = (
-    (-10.80, 7.40),
-    (-0.30, 7.40),
-    (-0.30, 6.40),
-    (-4.09, 6.40),
-    (-6.36, 3.02),
-    (-10.80, 3.02),
+    (_RED_TRAPEZOID_MIN_X_M, _RED_TRAPEZOID_MAX_Y_M),
+    (_RED_TRAPEZOID_MAX_X_M, _RED_TRAPEZOID_MAX_Y_M),
+    (_RED_TRAPEZOID_MAX_X_M, _RED_TRAPEZOID_MAX_Y_M - _TRAPEZOID_STEP_M),
+    (
+        _RED_TRAPEZOID_INNER_MIN_X_M + _TRAPEZOID_INNER_TOP_CHAIN_M,
+        _RED_TRAPEZOID_MAX_Y_M - _TRAPEZOID_STEP_M,
+    ),
+    (
+        _RED_TRAPEZOID_INNER_MIN_X_M + _TRAPEZOID_DIAGONAL_FOOT_M,
+        _RED_TRAPEZOID_MIN_Y_M,
+    ),
+    (_RED_TRAPEZOID_MIN_X_M, _RED_TRAPEZOID_MIN_Y_M),
 )
+
+# Manual V1.5.0 figure 4-34, printed p.60 (PDF p.61), dimensions the public
+# road envelope as 8901mm by 1561+2090mm. Intermediate outline vertices are
+# not tied to a complete global datum and therefore remain digitized [SIM].
+_ROAD_SIZE_XY_M = (8.901, 1.561 + 2.090)
+_RED_ROAD_MIN_X_M = -10.101
+_RED_ROAD_MIN_Y_M = -7.400
+_RED_ROAD_MAX_X_M = _RED_ROAD_MIN_X_M + _ROAD_SIZE_XY_M[0]
+_RED_ROAD_MAX_Y_M = _RED_ROAD_MIN_Y_M + _ROAD_SIZE_XY_M[1]
 _RED_ROAD_FOOTPRINT = (
-    (-10.10, -7.40),
-    (-1.20, -7.40),
-    (-1.20, -6.15),
+    (_RED_ROAD_MIN_X_M, _RED_ROAD_MIN_Y_M),
+    (_RED_ROAD_MAX_X_M, _RED_ROAD_MIN_Y_M),
+    (_RED_ROAD_MAX_X_M, -6.15),
     (-2.60, -6.15),
     (-3.80, -4.15),
-    (-4.85, -3.75),
-    (-10.10, -3.75),
+    (-4.85, _RED_ROAD_MAX_Y_M),
+    (_RED_ROAD_MIN_X_M, _RED_ROAD_MAX_Y_M),
 )
+
+# Manual V1.5.0 figure 4-25, printed p.52 (PDF p.53).
+_FORTRESS_OUTER_SIZE_XY_M = (2.240, 1.939)
+_FORTRESS_INNER_SIZE_XY_M = (1.306, 1.131)
+_FORTRESS_OUTER_EDGE_M = 1.120
+_FORTRESS_INNER_EDGE_M = 0.653
+_FORTRESS_TOP_HEIGHT_M = 0.150
+
+# Manual V1.5.0 figures 4-5 and 4-36, printed pp.34 and 61 (PDF pp.35
+# and 62). Only the 2.560m length, 0.070m bump height, and 0.240m pitch are
+# published. Width and global placement remain diagram-derived [SIM].
+_ROUGH_ROAD_LENGTH_M = 2.560
+_ROUGH_ROAD_WIDTH_M = 1.450
+_ROUGH_BUMP_HEIGHT_M = 0.070
+_ROUGH_BUMP_PITCH_M = 0.240
+
+# Manual V1.5.0 figure 4-37, printed p.62 (PDF p.63). The separate 0.650m
+# dimension is the flight gap, not part of the ramp footprint.
+_FLY_RAMP_SIZE_XY_M = (1.145, 0.860)
+_FLY_RAMP_LOW_M = 0.203
+_FLY_RAMP_HIGH_M = 0.553
 _RED_FORTRESS_FOOTPRINT = (
     (-8.52, 0.00),
     (-7.96, -0.9695),
@@ -232,9 +315,10 @@ _RED_FORTRESS_FOOTPRINT = (
     (-7.96, 0.9695),
 )
 
-# Figure 4-27 identifies two 10.5 degree connectors between the 200mm edge
-# level and 350mm main deck. Their inset follows the published angle; the
-# global edge assignment is a diagram-derived [SIM] choice.
+# Figure 4-27 (printed p.54/PDF p.55) identifies 10.5 degree connectors and
+# 200/300/350/400mm section levels. It does not uniquely map every section to
+# the crowned field or dimension every plan vertex. The selected 200-to-350mm
+# edge assignment and inset below are therefore [AMB]/[SIM].
 _CENTRAL_CONNECTOR_RUN_M = (0.35 - 0.20) / math.tan(math.radians(10.5))
 _CENTRAL_LOW_RED = _CENTRAL_HIGHLAND_FOOTPRINT[1:3]
 _CENTRAL_LOW_BLUE = _CENTRAL_HIGHLAND_FOOTPRINT[4:6]
@@ -261,7 +345,8 @@ _CENTRAL_BLUE_CONNECTOR_FOOTPRINT = (
     _CENTRAL_HIGH_BLUE[0],
 )
 
-# Figure 4-26 establishes 200--400mm surfaces and 23/43 degree transitions.
+# Figure 4-26 (printed p.53/PDF p.54) establishes 200--400mm surfaces and
+# 23/43 degree transitions.
 # The exact global patch boundaries are not independently dimensioned in
 # figure 4-5, so these plan placements remain [SIM] while their elevations,
 # slope angles, and footprint envelope follow the official detail.
@@ -299,12 +384,16 @@ def _fortress_surfaces(
     center_xy: tuple[float, float],
     outer: tuple[tuple[float, float], ...],
 ) -> tuple[TerrainPrimitive, ...]:
-    inner = _scale_polygon(outer, center_xy, 0.653 / 1.120)
+    inner = _scale_polygon(
+        outer,
+        center_xy,
+        _FORTRESS_INNER_EDGE_M / _FORTRESS_OUTER_EDGE_M,
+    )
     surfaces: list[TerrainPrimitive] = [
         TerrainPrimitive(
             f"{prefix}_fortress",
             center_xy,
-            (2.240, 1.939),
+            _FORTRESS_OUTER_SIZE_XY_M,
             0.0,
             0.0,
             category="fortress",
@@ -325,22 +414,27 @@ def _fortress_surfaces(
             TerrainPrimitive(
                 f"{prefix}_fortress_slope_{index}",
                 center_xy,
-                (2.240, 1.939),
+                _FORTRESS_OUTER_SIZE_XY_M,
                 0.0,
-                0.15,
+                _FORTRESS_TOP_HEIGHT_M,
                 category="fortress_slope",
                 team=team,
                 footprint_xy=(outer_start, outer_end, inner_end, inner_start),
-                vertex_elevations_m=(0.0, 0.0, 0.15, 0.15),
+                vertex_elevations_m=(
+                    0.0,
+                    0.0,
+                    _FORTRESS_TOP_HEIGHT_M,
+                    _FORTRESS_TOP_HEIGHT_M,
+                ),
             )
         )
     surfaces.append(
         TerrainPrimitive(
             f"{prefix}_fortress_top",
             center_xy,
-            (1.306, 1.131),
-            0.15,
-            0.15,
+            _FORTRESS_INNER_SIZE_XY_M,
+            _FORTRESS_TOP_HEIGHT_M,
+            _FORTRESS_TOP_HEIGHT_M,
             category="fortress_top",
             team=team,
             footprint_xy=inner,
@@ -350,12 +444,17 @@ def _fortress_surfaces(
 
 
 DEFAULT_TERRAIN: tuple[TerrainPrimitive, ...] = (
-    # Public-road regions are at field height. Their plan footprint follows
-    # figures 4-5 and 4-34; raised subfeatures are represented below.
+    # Figure 4-34 fixes the public-road envelope. Phase 1 keeps it at field
+    # height: the drawing shows 11/15 degree faces and 250/260mm section
+    # levels, but does not unambiguously map those sections onto the plan
+    # drawing and crowned datum. Those internal surfaces remain [AMB].
     TerrainPrimitive(
         "red_road",
-        (-5.65, -5.575),
-        (8.901, 3.651),
+        (
+            (_RED_ROAD_MIN_X_M + _RED_ROAD_MAX_X_M) / 2,
+            (_RED_ROAD_MIN_Y_M + _RED_ROAD_MAX_Y_M) / 2,
+        ),
+        _ROAD_SIZE_XY_M,
         0.0,
         0.0,
         category="road",
@@ -364,8 +463,11 @@ DEFAULT_TERRAIN: tuple[TerrainPrimitive, ...] = (
     ),
     TerrainPrimitive(
         "blue_road",
-        (5.65, 5.575),
-        (8.901, 3.651),
+        (
+            -(_RED_ROAD_MIN_X_M + _RED_ROAD_MAX_X_M) / 2,
+            -(_RED_ROAD_MIN_Y_M + _RED_ROAD_MAX_Y_M) / 2,
+        ),
+        _ROAD_SIZE_XY_M,
         0.0,
         0.0,
         yaw_deg=180.0,
@@ -373,13 +475,16 @@ DEFAULT_TERRAIN: tuple[TerrainPrimitive, ...] = (
         team=1,
         footprint_xy=_center_symmetric(_RED_ROAD_FOOTPRINT),
     ),
-    # Figure 4-26 gives an irregular 10.505m x 4.380m footprint, 200--400mm
-    # surfaces, and 23/43 degree faces. The base, two tops, and their slope
-    # patches preserve those published levels instead of flattening to 300mm.
+    # Figure 4-26 gives an irregular 10.805m x 4.380m outer footprint; the
+    # inset red-line span is 10.505m. Its 200--400mm surfaces and 23/43 degree
+    # faces remain separate instead of being flattened to one 300mm deck.
     TerrainPrimitive(
         "red_trapezoid_highland",
-        (-5.55, 5.21),
-        (10.505, 4.380),
+        (
+            (_RED_TRAPEZOID_MIN_X_M + _RED_TRAPEZOID_MAX_X_M) / 2,
+            (_RED_TRAPEZOID_MIN_Y_M + _RED_TRAPEZOID_MAX_Y_M) / 2,
+        ),
+        _TRAPEZOID_SIZE_XY_M,
         0.20,
         0.20,
         category="trapezoid",
@@ -388,8 +493,11 @@ DEFAULT_TERRAIN: tuple[TerrainPrimitive, ...] = (
     ),
     TerrainPrimitive(
         "blue_trapezoid_highland",
-        (5.55, -5.21),
-        (10.505, 4.380),
+        (
+            -(_RED_TRAPEZOID_MIN_X_M + _RED_TRAPEZOID_MAX_X_M) / 2,
+            -(_RED_TRAPEZOID_MIN_Y_M + _RED_TRAPEZOID_MAX_Y_M) / 2,
+        ),
+        _TRAPEZOID_SIZE_XY_M,
         0.20,
         0.20,
         yaw_deg=180.0,
@@ -451,9 +559,9 @@ DEFAULT_TERRAIN: tuple[TerrainPrimitive, ...] = (
         ),
         blue_name="blue_trapezoid_43_ramp",
     ),
-    # Figure 4-27 publishes the 7.700m x 10.820m envelope. Its skewed,
-    # center-symmetric outline contains a 200mm edge surface, a 350mm main
-    # deck, and two 10.5 degree connector patches.
+    # Figure 4-27 publishes the 7.700m x 10.820m envelope. Its unlabelled
+    # internal plan vertices and the mapping of 200/300/350/400mm section
+    # levels onto the crowned datum remain [AMB]; these patches are [SIM].
     TerrainPrimitive(
         "central_highland",
         (0.0, 0.0),
@@ -494,8 +602,10 @@ DEFAULT_TERRAIN: tuple[TerrainPrimitive, ...] = (
         footprint_xy=_CENTRAL_BLUE_CONNECTOR_FOOTPRINT,
         vertex_elevations_m=(0.20, 0.20, 0.35, 0.35),
     ),
-    # Figures 4-28 and 4-29 place the two assembly areas below the energy
-    # mechanism at field center. They are overlays on the central highland.
+    # Figures 4-28 and 4-29 (printed pp.55--56/PDF pp.56--57) publish local
+    # edge lengths/angles and 12/14/15/45 degree slopes, but no complete global
+    # datum or vertex-height triangulation. These flat Phase 1 overlays and
+    # their digitized footprints are [AMB]/[SIM], not official slope geometry.
     TerrainPrimitive(
         "red_assembly",
         (-0.875, 0.60),
@@ -523,18 +633,18 @@ DEFAULT_TERRAIN: tuple[TerrainPrimitive, ...] = (
     TerrainPrimitive(
         "red_fly_ramp",
         (-0.79, -6.90),
-        (1.145, 0.860),
-        0.203,
-        0.553,
+        _FLY_RAMP_SIZE_XY_M,
+        _FLY_RAMP_LOW_M,
+        _FLY_RAMP_HIGH_M,
         category="fly_ramp",
         team=0,
     ),
     TerrainPrimitive(
         "blue_fly_ramp",
         (0.79, 6.90),
-        (1.145, 0.860),
-        0.203,
-        0.553,
+        _FLY_RAMP_SIZE_XY_M,
+        _FLY_RAMP_LOW_M,
+        _FLY_RAMP_HIGH_M,
         yaw_deg=180.0,
         category="fly_ramp",
         team=1,
@@ -542,7 +652,7 @@ DEFAULT_TERRAIN: tuple[TerrainPrimitive, ...] = (
     TerrainPrimitive(
         "red_rough_road",
         (-7.60, -6.25),
-        (2.560, 1.450),
+        (_ROUGH_ROAD_LENGTH_M, _ROUGH_ROAD_WIDTH_M),
         0.0,
         0.0,
         category="rough",
@@ -551,7 +661,7 @@ DEFAULT_TERRAIN: tuple[TerrainPrimitive, ...] = (
     TerrainPrimitive(
         "blue_rough_road",
         (7.60, 6.25),
-        (2.560, 1.450),
+        (_ROUGH_ROAD_LENGTH_M, _ROUGH_ROAD_WIDTH_M),
         0.0,
         0.0,
         yaw_deg=180.0,
@@ -598,10 +708,12 @@ DEFAULT_TERRAIN: tuple[TerrainPrimitive, ...] = (
 
 @dataclass(frozen=True)
 class ArenaConfig:
-    """Explicit ``[SIM]`` coordinate and diagram-derived geometry choices."""
+    """Official arena bounds plus explicit ``[SIM]`` geometry choices."""
 
     field_length_m: float = 28.0
     field_width_m: float = 15.0
+    # Manual V1.5.0 figure 4-6 (printed p.35/PDF p.36) specifies a 1--2
+    # degree crown range. Phase 1 uses its 1.5 degree midpoint [SIM].
     field_crown_slope_deg: float = 1.5
     terrain_resolution_m: float = 0.05
     robot_radius_m: float = 0.40
@@ -1024,7 +1136,12 @@ class ArenaGeometry:
             if primitive.category == "rough":
                 # Figure 4-36 specifies 70mm bumps at 240mm pitch. A cosine
                 # profile is the Phase 1 differentiable [SIM] approximation.
-                elevation = elevation + 0.035 * (1.0 + torch.cos(2.0 * math.pi * local_x / 0.240))
+                elevation = elevation + (_ROUGH_BUMP_HEIGHT_M / 2) * (
+                    1.0
+                    + torch.cos(
+                        2.0 * math.pi * local_x / _ROUGH_BUMP_PITCH_M,
+                    )
+                )
             elevation_height = torch.where(
                 inside,
                 torch.maximum(elevation_height, elevation),
@@ -1086,43 +1203,53 @@ class ArenaGeometry:
         y_index.clamp_(min=0, max=grid.shape[0] - 1)
         return grid[y_index, x_index]
 
-    def zone_occupancy(self, position_xy: Tensor) -> Tensor:
-        if position_xy.shape[-2:] != (constants.UNIT_COUNT, 2):
-            raise ValueError("position_xy must have shape [env, unit, 2]")
-        device = position_xy.device
-        dtype = position_xy.dtype
-        # Per-team centers. Neutral central high ground is intentionally shared.
+    def zone_centers(
+        self,
+        *,
+        device: torch.device | str,
+        dtype: torch.dtype,
+    ) -> Tensor:
+        """Return Phase 1 ``[SIM]`` rule-region centers by team and ``Zone``."""
+
         red = torch.tensor(
             (
-                RED_SUPPLY_CENTER_XY,  # supply
-                RED_BASE_CENTER_XY,  # base
-                (0.0, 0.0),  # central high
-                (-9.6, 4.2),  # trapezoid-high gain point [SIM]
-                RED_OUTPOST_CENTER_XY,  # outpost (figure 4-5)
-                RED_FORTRESS_CENTER_XY,  # own fortress
-                BLUE_FORTRESS_CENTER_XY,  # enemy fortress
-                (-0.875, 0.60),  # assembly (figures 4-28 and 4-29)
+                RED_SUPPLY_CENTER_XY,
+                RED_BASE_CENTER_XY,
+                (0.0, 0.0),
+                (-9.6, 4.2),
+                RED_OUTPOST_CENTER_XY,
+                RED_FORTRESS_CENTER_XY,
+                BLUE_FORTRESS_CENTER_XY,
+                (-0.875, 0.60),
             ),
             device=device,
             dtype=dtype,
         )
         blue = -red
         blue[Zone.CENTRAL_HIGH] = red[Zone.CENTRAL_HIGH]
-        centers = torch.stack((red, blue), dim=0)
-        half_extent = torch.tensor(
-            (
-                (1.3, 1.2),
-                (1.1, 1.0),
-                (2.6, 2.0),
-                (1.3, 1.2),
-                (1.2, 1.2),
-                (1.12, 0.97),
-                (1.12, 0.97),
-                (1.2, 1.1),
-            ),
+        return torch.stack((red, blue), dim=0)
+
+    def zone_half_extents(
+        self,
+        *,
+        device: torch.device | str,
+        dtype: torch.dtype,
+    ) -> Tensor:
+        """Return Phase 1 ``[SIM]`` axis-aligned region half extents."""
+
+        return torch.tensor(
+            ZONE_HALF_EXTENTS_XY_M,
             device=device,
             dtype=dtype,
         )
+
+    def zone_occupancy(self, position_xy: Tensor) -> Tensor:
+        if position_xy.shape[-2:] != (constants.UNIT_COUNT, 2):
+            raise ValueError("position_xy must have shape [env, unit, 2]")
+        device = position_xy.device
+        dtype = position_xy.dtype
+        centers = self.zone_centers(device=device, dtype=dtype)
+        half_extent = self.zone_half_extents(device=device, dtype=dtype)
         teams = unit_teams(device)
         unit_centers = centers[teams]
         delta = torch.abs(position_xy[:, :, None, :] - unit_centers[None, :, :, :])

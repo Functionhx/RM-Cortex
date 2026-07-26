@@ -12,14 +12,22 @@ import subprocess
 import torch
 
 from rm_referee import constants
-from rm_referee.schema import Role, Team, Winner, unit_roles, unit_teams
+from rm_referee.schema import Role, Team, Winner, Zone, unit_roles, unit_teams
 from rm_train.actions import replace_team_actions
 from rm_world import (
+    ArenaViewport,
     BehaviorTreeOpponent,
     TacticalScriptedOpponent,
     TorchEnvConfig,
     TorchRMArena,
     tactical_phase_label,
+)
+from rm_world.arena import (
+    AERIAL_PAD_LANDING_SIZE_XY_M,
+    AERIAL_PAD_LANDING_STRAIGHT_EDGE_M,
+    AERIAL_PAD_OUTER_ENVELOPE_SIZE_XY_M,
+    BASE_PEDESTAL_SIZE_XY_M,
+    OUTPOST_BODY_DIAMETER_M,
 )
 from rm_world.geometry import resolve_target_slots
 
@@ -27,10 +35,9 @@ from rm_world.geometry import resolve_target_slots
 ROLE_LABELS = ("H", "E", "I3", "I4", "A", "S", "B", "O")
 RED = (255, 58, 83)
 BLUE = (20, 136, 255)
-CANVAS = (1120, 700)
-MARGIN_X = 44
-MARGIN_TOP = 74
-MARGIN_BOTTOM = 92
+VIEWPORT = ArenaViewport()
+CANVAS = VIEWPORT.canvas_size_px
+MARGIN_X, MARGIN_TOP, _, _ = VIEWPORT.field_bounds
 HEIGHT_STOPS = (
     (0.00, (14, 35, 46)),
     (0.15, (51, 78, 84)),
@@ -41,15 +48,15 @@ HEIGHT_STOPS = (
     (0.55, (180, 194, 192)),
 )
 FEATURE_LABELS = {
-    "central_highland": "CENTRAL HIGH · 0.20–0.35m · 10.5°",
-    "red_trapezoid_highland": "TRAPEZOID · 23°/43°",
-    "blue_trapezoid_highland": "TRAPEZOID · 23°/43°",
-    "red_road": "ROAD · 11°/15°",
-    "blue_road": "ROAD · 11°/15°",
-    "red_rough_road": "BUMPS · 70/240mm",
-    "blue_rough_road": "BUMPS · 70/240mm",
-    "red_fortress": "FORT · 20°",
-    "blue_fortress": "FORT · 20°",
+    "central_highland": "CENTRAL · 7.700×10.820m",
+    "red_trapezoid_highland": "TRAPEZOID · 10.805×4.380m",
+    "blue_trapezoid_highland": "TRAPEZOID · 10.805×4.380m",
+    "red_road": "ROAD · 8.901×3.651m",
+    "blue_road": "ROAD · 8.901×3.651m",
+    "red_rough_road": "BUMPS · 70mm/240mm",
+    "blue_rough_road": "BUMPS · 70mm/240mm",
+    "red_fortress": "FORT · 2.240×1.939m",
+    "blue_fortress": "FORT · 2.240×1.939m",
     "red_tunnel": "TUNNEL",
     "blue_tunnel": "TUNNEL",
 }
@@ -128,17 +135,11 @@ def _font(size: int, *, bold: bool = False) -> object:
 
 
 def _to_pixel(x: float, y: float) -> tuple[int, int]:
-    width, height = CANVAS
-    field_width = width - 2 * MARGIN_X
-    field_height = height - MARGIN_TOP - MARGIN_BOTTOM
-    px = MARGIN_X + (x + 14.0) / 28.0 * field_width
-    py = MARGIN_TOP + (7.5 - y) / 15.0 * field_height
-    return round(px), round(py)
+    return VIEWPORT.to_pixel(x, y)
 
 
 def _meters_to_pixels(distance_m: float) -> int:
-    field_width_pixels = CANVAS[0] - 2 * MARGIN_X
-    return max(1, round(distance_m / 28.0 * field_width_pixels))
+    return max(1, VIEWPORT.meters_to_pixels(distance_m))
 
 
 def _regular_polygon(
@@ -153,6 +154,44 @@ def _regular_polygon(
         )
         for index in range(sides)
     ]
+
+
+def _dimensioned_octagon(
+    center_xy: tuple[float, float],
+    size_xy: tuple[float, float],
+    *,
+    horizontal_straight_edge_m: float,
+    vertical_straight_edge_m: float,
+) -> list[tuple[int, int]]:
+    half_x = size_xy[0] / 2
+    half_y = size_xy[1] / 2
+    half_horizontal_edge = horizontal_straight_edge_m / 2
+    half_vertical_edge = vertical_straight_edge_m / 2
+    if half_horizontal_edge > half_x or half_vertical_edge > half_y:
+        raise ValueError("octagon straight edges must fit inside its envelope")
+    return [
+        _to_pixel(center_xy[0] + x, center_xy[1] + y)
+        for x, y in (
+            (-half_horizontal_edge, half_y),
+            (half_horizontal_edge, half_y),
+            (half_x, half_vertical_edge),
+            (half_x, -half_vertical_edge),
+            (half_horizontal_edge, -half_y),
+            (-half_horizontal_edge, -half_y),
+            (-half_x, -half_vertical_edge),
+            (-half_x, half_vertical_edge),
+        )
+    ]
+
+
+def _ellipse_box(
+    center_xy: tuple[float, float],
+    radius_xy: tuple[float, float],
+) -> tuple[int, int, int, int]:
+    return (
+        *_to_pixel(center_xy[0] - radius_xy[0], center_xy[1] + radius_xy[1]),
+        *_to_pixel(center_xy[0] + radius_xy[0], center_xy[1] - radius_xy[1]),
+    )
 
 
 def _height_color(elevation_m: float) -> tuple[int, int, int]:
@@ -206,14 +245,19 @@ def _terrain_points(arena: object, primitive: object) -> list[tuple[int, int]]:
 
 
 def _render_elevation_layer(image: object, arena: object) -> None:
-    from PIL import Image, ImageDraw
+    from PIL import Image
 
-    left, top = _to_pixel(-14.0, 7.5)
-    right, bottom = _to_pixel(14.0, -7.5)
-    field_size = (right - left + 1, bottom - top + 1)
-    sample_size = (field_size[0] // 2, field_size[1] // 2)
-    x = torch.linspace(-14.0, 14.0, sample_size[0])
-    y = torch.linspace(7.5, -7.5, sample_size[1])
+    left, top, _, _ = VIEWPORT.field_bounds
+    field_size = (VIEWPORT.field_width_px, VIEWPORT.field_height_px)
+    # Sample at final-pixel centers so the raster and vector layers share the
+    # same 36 px/m transform. No independent resize grid or rounded clipping.
+    x = (
+        torch.arange(field_size[0], dtype=torch.float32) + 0.5
+    ) / VIEWPORT.pixels_per_meter - VIEWPORT.field_length_m / 2
+    y = (
+        VIEWPORT.field_width_m / 2
+        - (torch.arange(field_size[1], dtype=torch.float32) + 0.5) / VIEWPORT.pixels_per_meter
+    )
     yy, xx = torch.meshgrid(y, x, indexing="ij")
     position = torch.stack((xx, yy), dim=-1)
     elevation = arena.terrain_elevation(position)
@@ -231,16 +275,9 @@ def _render_elevation_layer(image: object, arena: object) -> None:
         else:
             band_height = round(height / 0.05) * 0.05
             pixels.append(_height_color(band_height))
-    terrain_layer = Image.new("RGB", sample_size)
+    terrain_layer = Image.new("RGB", field_size)
     terrain_layer.putdata(pixels)
-    terrain_layer = terrain_layer.resize(field_size, Image.Resampling.NEAREST)
-    mask = Image.new("L", field_size, 0)
-    ImageDraw.Draw(mask).rounded_rectangle(
-        (0, 0, field_size[0] - 1, field_size[1] - 1),
-        radius=8,
-        fill=255,
-    )
-    image.paste(terrain_layer, (left, top), mask)
+    image.paste(terrain_layer, (left, top))
 
 
 def _draw_slope_arrow(
@@ -331,6 +368,16 @@ def _draw_height_legend(draw: object, legend_font: object) -> None:
     start_x = 338
     y = CANVAS[1] - 73
     draw.text(
+        (MARGIN_X, y + 6),
+        (
+            f"{VIEWPORT.field_length_m:g}×{VIEWPORT.field_width_m:g}m"
+            f" · {VIEWPORT.pixels_per_meter}px/m"
+        ),
+        fill=(139, 159, 168),
+        font=legend_font,
+        anchor="lm",
+    )
+    draw.text(
         (start_x - 12, y + 6),
         "HEIGHT ABOVE LOCAL FIELD",
         fill=(139, 159, 168),
@@ -373,12 +420,15 @@ def _draw_static(
     draw = ImageDraw.Draw(image)
     left, top = _to_pixel(-14.0, 7.5)
     right, bottom = _to_pixel(14.0, -7.5)
-    draw.rounded_rectangle(
+    draw.rectangle(
         (left, top, right, bottom),
-        radius=8,
         outline=(205, 222, 232),
         width=2,
     )
+    for x in range(-12, 14, 2):
+        start = _to_pixel(float(x), 7.5)
+        end = _to_pixel(float(x), -7.5)
+        draw.line((*start, *end), fill=(20, 43, 53), width=1)
     for y in (-5.0, -2.5, 2.5, 5.0):
         start = _to_pixel(-14.0, y)
         end = _to_pixel(14.0, y)
@@ -392,16 +442,6 @@ def _draw_static(
         team_color = RED if primitive.team == Team.RED else BLUE
         primary_surface = primitive.name in FEATURE_LABELS or primitive.category == "assembly"
         outline = (151, 168, 175) if primitive.team is None else team_color
-        maximum_height = max(
-            primitive.vertex_elevations_m
-            or (primitive.elevation_start_m, primitive.elevation_end_m)
-        )
-        if maximum_height >= 0.12 and (
-            primary_surface
-            or primitive.category in {"central_top", "trapezoid_top", "fortress_top"}
-        ):
-            shadow = [(x + 2, y + 3) for x, y in points]
-            draw.line((*shadow, shadow[0]), fill=(4, 12, 17), width=4)
         if primitive.category == "tunnel":
             draw.polygon(points, fill=_height_color(0.10))
             shoulder = _rectangle_points(
@@ -493,41 +533,65 @@ def _draw_static(
             float(base_center_tensor[0]),
             float(base_center_tensor[1]),
         )
-        base_zone = _regular_polygon(base_center, (1.05, 0.90), 6)
-        draw.line((*base_zone, base_zone[0]), fill=color, width=2)
-        outpost_center = arena.outpost_centers(
-            device="cpu",
-            dtype=torch.float32,
-        )[team]
-        outpost_zone = _regular_polygon(
-            (float(outpost_center[0]), float(outpost_center[1])),
-            (0.95, 1.05),
-            6,
+        # Figure 4-9 does not define how its asymmetric outline is referenced
+        # to the figure 4-5 center. Draw only the published world-axis plan
+        # bounds instead of inventing a centered hexagonal silhouette.
+        base_footprint = _rectangle_points(
+            base_center,
+            BASE_PEDESTAL_SIZE_XY_M,
+            0.0,
         )
-        draw.line((*outpost_zone, outpost_zone[0]), fill=color, width=2)
-        supply_center_tensor = arena.supply_centers(
+        draw.polygon(base_footprint, fill=(25, 39, 46), outline=color)
+        draw.line((*base_footprint, base_footprint[0]), fill=color, width=2)
+
+        outpost_center_tensor = arena.outpost_centers(
             device="cpu",
             dtype=torch.float32,
         )[team]
+        outpost_center = (
+            float(outpost_center_tensor[0]),
+            float(outpost_center_tensor[1]),
+        )
+        # The manual publishes only one pedestal width, not a 2D footprint.
+        # Render the dimensioned rotating-body diameter and omit an invented
+        # square or octagonal base.
+        draw.ellipse(
+            _ellipse_box(
+                outpost_center,
+                (OUTPOST_BODY_DIAMETER_M / 2, OUTPOST_BODY_DIAMETER_M / 2),
+            ),
+            outline=color,
+            width=2,
+        )
+
+        zone_centers = arena.zone_centers(
+            device="cpu",
+            dtype=torch.float32,
+        )[team]
+        zone_extents = arena.zone_half_extents(
+            device="cpu",
+            dtype=torch.float32,
+        )
+        supply_center_tensor = zone_centers[Zone.SUPPLY]
         supply_center = (
             float(supply_center_tensor[0]),
             float(supply_center_tensor[1]),
         )
-        supply_half = (1.25, 1.05)
+        supply_half = zone_extents[Zone.SUPPLY]
         supply_box = (
             *_to_pixel(
-                supply_center[0] - supply_half[0],
-                supply_center[1] + supply_half[1],
+                supply_center[0] - float(supply_half[0]),
+                supply_center[1] + float(supply_half[1]),
             ),
             *_to_pixel(
-                supply_center[0] + supply_half[0],
-                supply_center[1] - supply_half[1],
+                supply_center[0] + float(supply_half[0]),
+                supply_center[1] - float(supply_half[1]),
             ),
         )
-        draw.rounded_rectangle(supply_box, radius=4, outline=color, width=2)
+        draw.rectangle(supply_box, outline=color, width=1)
         draw.text(
             _to_pixel(*supply_center),
-            "SUPPLY",
+            "SUPPLY [SIM]",
             fill=(190, 205, 212),
             font=label_font,
             anchor="mm",
@@ -540,11 +604,25 @@ def _draw_static(
             float(pad_center_tensor[0]),
             float(pad_center_tensor[1]),
         )
-        pad_outline = _regular_polygon(pad_center, (0.95, 0.85), 8)
-        draw.line((*pad_outline, pad_outline[0]), fill=color, width=2)
+        pad_outer = _rectangle_points(
+            pad_center,
+            AERIAL_PAD_OUTER_ENVELOPE_SIZE_XY_M,
+            0.0,
+        )
+        pad_landing = _dimensioned_octagon(
+            pad_center,
+            AERIAL_PAD_LANDING_SIZE_XY_M,
+            horizontal_straight_edge_m=AERIAL_PAD_LANDING_STRAIGHT_EDGE_M,
+            vertical_straight_edge_m=AERIAL_PAD_LANDING_STRAIGHT_EDGE_M,
+        )
+        draw.polygon(pad_outer, fill=(25, 39, 46), outline=color)
+        draw.line((*pad_outer, pad_outer[0]), fill=color, width=2)
+        draw.polygon(pad_landing, fill=(19, 32, 39))
+        draw.line((*pad_landing, pad_landing[0]), fill=color, width=1)
+        label_sign = 1.0 if team == Team.RED else -1.0
         draw.text(
-            _to_pixel(*pad_center),
-            "PAD",
+            _to_pixel(pad_center[0], pad_center[1] - 0.92 * label_sign),
+            "[SIM] PAD",
             fill=(190, 205, 212),
             font=label_font,
             anchor="mm",
@@ -561,7 +639,7 @@ def _draw_static(
         )
     draw.text(
         _to_pixel(0.0, 0.0),
-        "ENERGY CORE",
+        "TECH CORE",
         fill=(222, 231, 234),
         font=label_font,
         anchor="mm",
@@ -571,7 +649,7 @@ def _draw_static(
     for label_xy in ((-1.45, 0.45), (1.45, -0.45)):
         draw.text(
             _to_pixel(*label_xy),
-            "ASSEMBLY · 12°–45°",
+            "ASSEMBLY [SIM]",
             fill=(226, 235, 237),
             font=label_font,
             anchor="mm",
@@ -579,6 +657,13 @@ def _draw_static(
             stroke_fill=(22, 31, 36),
         )
     _draw_height_legend(draw, legend_font)
+    draw.text(
+        (CANVAS[0] // 2, CANVAS[1] - 38),
+        "OUTLINES = PUBLISHED DIMENSIONS · [SIM] = DIAGRAM-DERIVED PLACEMENT",
+        fill=(108, 131, 142),
+        font=legend_font,
+        anchor="ms",
+    )
 
 
 def main() -> None:
@@ -631,7 +716,7 @@ def main() -> None:
     _draw_static(static_image, environment.arena, terrain_font, small_font)
     trails: deque[torch.Tensor] = deque(maxlen=22)
     frames: list[object] = []
-    radii_m = torch.where(
+    collision_radii_m = torch.where(
         roles == Role.BASE,
         torch.full_like(roles, 0.95, dtype=torch.float32),
         torch.where(
@@ -668,7 +753,7 @@ def main() -> None:
 
         xy = environment.world.position_xy[0].detach().cpu()
         distance_matrix = torch.cdist(xy, xy)
-        clearance = distance_matrix - radii_m[:, None] - radii_m[None, :]
+        clearance = distance_matrix - collision_radii_m[:, None] - collision_radii_m[None, :]
         minimum_clearance_m = min(
             minimum_clearance_m,
             float(clearance[ground_pair].min()),
@@ -766,22 +851,42 @@ def main() -> None:
             color = RED if int(teams[unit]) == Team.RED else BLUE
             if not bool(alive[unit]):
                 color = tuple(channel // 4 for channel in color)
-            radius = _meters_to_pixels(float(radii_m[unit]))
-            if role == Role.AERIAL:
-                radius = _meters_to_pixels(0.32)
             outline = (255, 190, 82) if bool(weak[unit]) else (235, 244, 248)
-            draw.ellipse(
-                (x - radius, y - radius, x + radius, y + radius),
-                fill=color,
-                outline=outline,
-                width=2,
-            )
-            heading_length = radius + 9
-            heading_end = (
-                round(x + torch.cos(yaw[unit]).item() * heading_length),
-                round(y - torch.sin(yaw[unit]).item() * heading_length),
-            )
-            draw.line((x, y, *heading_end), fill=(255, 255, 255), width=2)
+            if role == Role.BASE:
+                structure_center = (float(xy[unit, 0]), float(xy[unit, 1]))
+                # The exact static plan bounds remain visible underneath this
+                # compact glyph, which represents live base state rather than
+                # claiming an official silhouette.
+                structure = _regular_polygon(structure_center, (0.38, 0.38), 6)
+                draw.polygon(structure, fill=color, outline=outline)
+                draw.line((*structure, structure[0]), fill=outline, width=2)
+                display_radius = _meters_to_pixels(max(BASE_PEDESTAL_SIZE_XY_M) / 2)
+            elif role == Role.OUTPOST:
+                radius = _meters_to_pixels(OUTPOST_BODY_DIAMETER_M / 2)
+                draw.ellipse(
+                    (x - radius, y - radius, x + radius, y + radius),
+                    fill=color,
+                    outline=outline,
+                    width=2,
+                )
+                display_radius = radius
+            else:
+                radius_m = 0.32 if role == Role.AERIAL else 0.40
+                radius = _meters_to_pixels(radius_m)
+                draw.ellipse(
+                    (x - radius, y - radius, x + radius, y + radius),
+                    fill=color,
+                    outline=outline,
+                    width=2,
+                )
+                display_radius = radius
+            if role != Role.BASE:
+                heading_length = display_radius + 9
+                heading_end = (
+                    round(x + torch.cos(yaw[unit]).item() * heading_length),
+                    round(y - torch.sin(yaw[unit]).item() * heading_length),
+                )
+                draw.line((x, y, *heading_end), fill=(255, 255, 255), width=2)
             draw.text(
                 (x, y),
                 ROLE_LABELS[role],
@@ -791,9 +896,9 @@ def main() -> None:
             )
             if max_hp[unit] > 0:
                 fraction = max(0.0, min(1.0, float(hp[unit] / max_hp[unit])))
-                bar_left = x - radius
-                bar_right = x + radius
-                bar_y = y + radius + 6
+                bar_left = x - display_radius
+                bar_right = x + display_radius
+                bar_y = y + display_radius + 6
                 draw.rectangle(
                     (bar_left, bar_y, bar_right, bar_y + 4),
                     fill=(39, 47, 52),

@@ -35,6 +35,7 @@ from isaaclab.terrains.utils import create_prim_from_mesh  # type: ignore[import
 from isaaclab.utils import configclass  # type: ignore[import-not-found]
 
 from rm_isaac.adapter import IsaacGeometryFrame, IsaacRuleAdapter
+from rm_isaac.terrain_mesh import build_terrain_prism_mesh_data
 from rm_referee import constants
 from rm_referee.events import RefereeEvents
 from rm_referee.random_tape import RandomTape
@@ -43,10 +44,10 @@ from rm_referee.schema import Role, Team, slot
 from rm_referee.state import GameState
 from rm_world.actions import WorldActions
 from rm_world.arena import (
+    BASE_PEDESTAL_SIZE_XY_M,
+    OUTPOST_BODY_DIAMETER_M,
     ArenaGeometry,
     TerrainPrimitive,
-    polygon_area,
-    triangulate_polygon,
 )
 from rm_world.backend import TorchRuleBackend, mask_intermediate_policy_pulses
 from rm_world.kinematics import KinematicConfig, KinematicState, KinematicWorld
@@ -157,47 +158,31 @@ def _terrain_color(primitive: TerrainPrimitive) -> tuple[float, float, float]:
 
 def _polygon_prism_mesh(
     primitive: TerrainPrimitive,
-    height_m: float,
+    *,
+    field_width_m: float,
+    field_crown_slope_deg: float,
 ) -> trimesh.Trimesh:
     """Build an extruded mesh from the same footprint used by Torch geometry."""
 
-    points = primitive.footprint_xy
-    triangles = triangulate_polygon(points)
-    if polygon_area(points) < 0:
-        ordered = list(reversed(range(len(points))))
-    else:
-        ordered = list(range(len(points)))
-    center_x, center_y = primitive.center_xy
-    top_height = primitive.vertex_elevations_m or (height_m,) * len(points)
-    bottom_z = min(0.0, min(top_height) - 0.025)
-    bottom = [(x - center_x, y - center_y, bottom_z) for x, y in points]
-    top = [
-        (x - center_x, y - center_y, vertex_height)
-        for (x, y), vertex_height in zip(points, top_height, strict=True)
-    ]
-    vertex_count = len(points)
-    faces: list[tuple[int, int, int]] = []
-    for a, b, c in triangles:
-        faces.append((c, b, a))
-        faces.append((vertex_count + a, vertex_count + b, vertex_count + c))
-    for cursor, current in enumerate(ordered):
-        following = ordered[(cursor + 1) % len(ordered)]
-        faces.append((current, following, vertex_count + following))
-        faces.append((current, vertex_count + following, vertex_count + current))
+    mesh_data = build_terrain_prism_mesh_data(
+        primitive,
+        field_width_m=field_width_m,
+        field_crown_slope_deg=field_crown_slope_deg,
+    )
     return trimesh.Trimesh(
-        vertices=np.asarray(bottom + top, dtype=np.float32),
-        faces=np.asarray(faces, dtype=np.int64),
+        vertices=np.asarray(mesh_data.vertices, dtype=np.float32),
+        faces=np.asarray(mesh_data.faces, dtype=np.int64),
         process=False,
     )
 
 
 def _unit_marker(role: int, team: int) -> object:
     if role == Role.BASE:
-        size = (1.88, 1.61, 1.18)
+        size = (*BASE_PEDESTAL_SIZE_XY_M, 1.18)
     elif role == Role.OUTPOST:
         color = (0.10, 0.24, 0.58) if team == Team.BLUE else (0.58, 0.10, 0.12)
         return sim_utils.CylinderCfg(
-            radius=0.375,
+            radius=OUTPOST_BODY_DIAMETER_M / 2,
             height=1.88,
             visual_material=sim_utils.PreviewSurfaceCfg(
                 diffuse_color=color,
@@ -406,21 +391,15 @@ class RMCortexDirectMARLEnv(DirectMARLEnv):
                     ridge_index += 1
                 continue
 
-            elevation_delta = primitive.elevation_end_m - primitive.elevation_start_m
             if primitive.footprint_xy:
-                if primitive.vertex_elevations_m:
-                    height = max(primitive.vertex_elevations_m)
-                    base_z = crown
-                elif primitive.category == "assembly":
-                    height = 0.012
-                    base_z = crown + primitive.elevation_start_m
-                else:
-                    height = max(primitive.elevation_start_m, 0.025)
-                    base_z = crown
                 create_prim_from_mesh(
                     f"/World/envs/env_0/Terrain_{primitive.name}",
-                    _polygon_prism_mesh(primitive, height),
-                    translation=(*primitive.center_xy, base_z),
+                    _polygon_prism_mesh(
+                        primitive,
+                        field_width_m=arena.config.field_width_m,
+                        field_crown_slope_deg=arena.config.field_crown_slope_deg,
+                    ),
+                    translation=(*primitive.center_xy, 0.0),
                     visual_material=sim_utils.PreviewSurfaceCfg(
                         diffuse_color=_terrain_color(primitive),
                         roughness=0.72,
@@ -428,6 +407,7 @@ class RMCortexDirectMARLEnv(DirectMARLEnv):
                 )
                 continue
 
+            elevation_delta = primitive.elevation_end_m - primitive.elevation_start_m
             if abs(elevation_delta) < 1.0e-6:
                 height = max(primitive.elevation_start_m, 0.025)
                 size = (*primitive.size_xy, height)

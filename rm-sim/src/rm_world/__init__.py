@@ -64,8 +64,10 @@ from rm_world.scripted import (
     tactical_phase_label,
     tactical_route_waypoints,
 )
+from rm_world.viewport import ArenaViewport
 
 __all__ = [
+    "ArenaViewport",
     "ArenaConfig",
     "ArenaGeometry",
     "ArmorSolution",
