@@ -25,21 +25,35 @@ BLUE_FORTRESS_CENTER_XY = (7.400, 0.0)
 
 # Published physical dimensions used by simulation diagnostics and
 # visualization. These are not collision radii or referee-zone dimensions.
-# Figure 4-9 gives the base as 1609mm front-to-back by 1881mm laterally;
-# figure 4-5 places its front along the field x-axis. The figure does not give
-# the reference point needed to place its asymmetric outline about the base
-# center, so Phase 1 uses only these axis-aligned plan bounds.
+# Figure 4-9 gives the base core as 1609mm front-to-back by 1881mm laterally.
+# Its axial dimension chain locates the rear edge and widest shoulders relative
+# to the figure 4-5 rotation axis. The unlabelled front half-width is digitized,
+# and peripheral side details are omitted from this core approximation.
 BASE_PEDESTAL_SIZE_XY_M = (1.609, 1.881)
-# Figure 4-33 publishes a 550mm body diameter, but only one 650mm pedestal
-# width in elevation. The latter must not be treated as a 650x650mm footprint.
-OUTPOST_BODY_DIAMETER_M = 0.550
+BASE_PEDESTAL_FRONT_HALF_WIDTH_M = 0.390  # [DIGITIZED], figure 4-9
+RED_BASE_PEDESTAL_FOOTPRINT_XY_M = (
+    (-12.345, 0.5445),
+    (-11.680, 0.9405),
+    (-10.736, BASE_PEDESTAL_FRONT_HALF_WIDTH_M),
+    (-10.736, -BASE_PEDESTAL_FRONT_HALF_WIDTH_M),
+    (-11.680, -0.9405),
+    (-12.345, -0.5445),
+)
+# Figure 4-33 publishes a 550mm circular sweep envelope for the three rotating
+# armor modules, not a solid-body diameter. It gives only one 650mm pedestal
+# width in elevation, which must not be treated as a 650x650mm footprint.
+OUTPOST_ARMOR_SWEEP_DIAMETER_M = 0.550
 OUTPOST_PEDESTAL_WIDTH_M = 0.650
-# Figure 4-16 separates the complete outer structure envelope from the
-# landing octagon. The 1334mm dimensions are the octagon's horizontal and
-# vertical straight-edge lengths, not a second projection footprint.
-AERIAL_PAD_OUTER_ENVELOPE_SIZE_XY_M = (2.200, 2.858)
-AERIAL_PAD_LANDING_SIZE_XY_M = (2.149, 2.200)
-AERIAL_PAD_LANDING_STRAIGHT_EDGE_M = 1.334
+# Figure 4-16 publishes these frame reference spans. It does not establish a
+# closed rectangular envelope, fully dimension the red platform octagon, or
+# locate that platform inside the asymmetric outer structure. In particular,
+# 1334mm labels the surrounding long frame members, not an octagon edge.
+AERIAL_PAD_FRAME_REFERENCE_SPANS_XY_M = (2.200, 2.858)
+AERIAL_PAD_INNER_FRAME_SPAN_XY_M = (2.149, 2.200)
+AERIAL_PAD_FRAME_MEMBER_LENGTH_M = 1.334
+# The platform outline below is intentionally visualization-only until an
+# official closed coordinate chain is published.
+AERIAL_PAD_PLATFORM_VISUAL_SIZE_XY_M = (1.850, 1.900)
 
 # Figure 4-5 does not separately dimension these centers. They are digitized
 # from the dimensioned plan and therefore remain explicit [SIM] placements.
@@ -47,6 +61,19 @@ RED_AERIAL_PAD_CENTER_XY = (-12.52, 5.68)
 BLUE_AERIAL_PAD_CENTER_XY = (12.52, -5.68)
 RED_SUPPLY_CENTER_XY = (-11.55, -5.65)
 BLUE_SUPPLY_CENTER_XY = (11.55, 5.65)
+
+# Figure 4-8 dimension chain, expressed in the figure 4-5 world frame. This
+# is the pre-match starting area. Figure 5-24 only gives the base RFID region
+# topology, so Phase 1 attaches that topology to this dimensioned footprint
+# rather than inventing an unrelated rectangle.
+RED_STARTING_ZONE_FOOTPRINT_XY_M = (
+    (-11.792, 1.9530),
+    (-9.815, 0.8115),
+    (-9.815, -0.8115),
+    (-11.792, -1.9530),
+    (-13.170, -1.1925),
+    (-13.170, 1.1925),
+)
 
 # Manual V1.5.0 p. 63: the cable stop is approximately 14m from the team's
 # short edge and the elastic safety tether is 2.4m long. The y limits are a
@@ -57,7 +84,8 @@ AERIAL_CORRIDOR_MIN_Y_M = 3.0
 AERIAL_CORRIDOR_MAX_Y_M = 7.1
 
 # Phase 1 [SIM] axis-aligned rule-region envelopes, ordered by ``Zone``.
-# Keep these separate from the published physical structures above.
+# Figure 5-24 gives topology but not numerical RFID boundaries. Keep these
+# explicitly separate from the physical/reference footprints below.
 ZONE_HALF_EXTENTS_XY_M: tuple[tuple[float, float], ...] = (
     (1.30, 1.20),  # supply
     (1.10, 1.00),  # base
@@ -75,18 +103,19 @@ def _center_symmetric(
 ) -> tuple[tuple[float, float], ...]:
     """Rotate a polygon by 180 degrees while preserving winding."""
 
-    return tuple((-x, -y) for x, y in reversed(footprint))
+    return tuple((-x, -y) for x, y in footprint)
 
 
 @dataclass(frozen=True)
 class TerrainPrimitive:
-    """Rule-manual terrain surface with explicit simulation approximations.
+    """Rule-manual terrain surface with explicit geometry provenance.
 
     Values called out by rule-manual figures 4-5 and 4-25--4-37 use their
-    published dimensions. Unlabelled placements and subdivisions remain
-    ``[SIM]`` or ``[AMB]`` until official CAD/USD assets are available.
-    Elevation normally changes along the primitive's local x-axis. Polygonal
-    slope patches can instead provide one elevation per footprint vertex.
+    published nominal dimensions. Plan-calibrated values are ``[DIGITIZED]``,
+    constrained closures are ``[INFERRED]``, unresolved mappings are
+    ``[AMB]``, and model choices are ``[SIM]``. Elevation normally changes
+    along the primitive's local x-axis. Polygonal slope patches can instead
+    provide one elevation per footprint vertex.
     """
 
     name: str
@@ -149,7 +178,7 @@ def _mirror_surface(
         category=primitive.category,
         team=team,
         footprint_xy=_center_symmetric(primitive.footprint_xy),
-        vertex_elevations_m=tuple(reversed(primitive.vertex_elevations_m)),
+        vertex_elevations_m=primitive.vertex_elevations_m,
     )
 
 
@@ -222,69 +251,106 @@ def triangulate_polygon(
     return tuple(triangles)
 
 
+# Figure 4-27 directly publishes the 7.700m by 10.820m control bounds. The
+# two unlabelled chamfer intercepts are calibrated from the plan and therefore
+# remain [DIGITIZED], rather than being presented as official dimensions.
+_CENTRAL_HIGHLAND_CHAMFER_X_M = 1.500
+_CENTRAL_HIGHLAND_CHAMFER_Y_M = 2.200
 _CENTRAL_HIGHLAND_FOOTPRINT = (
     (-3.85, -5.41),
-    (1.50, -5.41),
-    (3.85, -2.20),
+    (_CENTRAL_HIGHLAND_CHAMFER_X_M, -5.41),
+    (3.85, -_CENTRAL_HIGHLAND_CHAMFER_Y_M),
     (3.85, 5.41),
-    (-1.50, 5.41),
-    (-3.85, 2.20),
+    (-_CENTRAL_HIGHLAND_CHAMFER_X_M, 5.41),
+    (-3.85, _CENTRAL_HIGHLAND_CHAMFER_Y_M),
 )
-_RED_ASSEMBLY_FOOTPRINT = (
-    (-1.90, 0.20),
-    (-1.65, 1.55),
-    (-0.55, 1.30),
-    (0.15, 0.55),
-    (0.10, -0.35),
-    (-0.85, -0.20),
+# Figures 4-28 and 4-29 publish the four red boundary segments and their
+# angles. Their global axis and closure along the central structure are not
+# numerically dimensioned. These vertices preserve the nominal chain, then
+# use the plan-calibrated center/axis and one [INFERRED] closing segment.
+RED_ASSEMBLY_REFERENCE_FOOTPRINT_XY_M = (
+    (-1.158148, -0.735265),
+    (-1.722633, 0.346288),
+    (-1.029132, 1.575099),
+    (-0.652619, 1.645296),
+    (0.126735, 1.026723),
 )
+_ASSEMBLY_EDGE_CHAIN_M = (1.220, 1.411, 0.383, 0.995)
+_ASSEMBLY_INTERNAL_ANGLES_DEG = (123.0, 130.0, 131.0)
+_ASSEMBLY_SLOPE_ANGLES_DEG = (12.0, 14.0, 45.0, 15.0)
+_ASSEMBLY_LOW_HEIGHT_M = 0.100
+_ASSEMBLY_HIGH_HEIGHT_M = 0.200
 
-# Manual V1.5.0 figure 4-26, printed p.53 (PDF p.54), publishes the outer
-# horizontal chain as 300+6707+3798=10805mm. The 10505mm span starts at the
-# inset red line and is not the complete physical envelope. The red-side
-# global anchor remains a figure 4-5 digitization [SIM].
+# Manual V1.5.0 figure 4-26, printed p.53 (PDF p.54). The 10.805m by
+# 4.380m values are control spans across guard strips, deck edges, and slope
+# feet; they are not a ready-made closed terrain polygon. The points below
+# follow the labelled axial stations while retaining a [DIGITIZED] global
+# transform. The station chain and illustrated 125-degree corner are mildly
+# overconstrained, so the intervening closure remains [INFERRED].
 _TRAPEZOID_OUTER_STRIP_M = 0.300
 _TRAPEZOID_SIZE_XY_M = (0.300 + 6.707 + 3.798, 4.380)
 _TRAPEZOID_INNER_TOP_CHAIN_M = 6.707
 _TRAPEZOID_DIAGONAL_FOOT_M = 4.440
 _TRAPEZOID_STEP_M = 1.003
-_RED_TRAPEZOID_INNER_MIN_X_M = -10.805
-_RED_TRAPEZOID_MIN_X_M = _RED_TRAPEZOID_INNER_MIN_X_M - _TRAPEZOID_OUTER_STRIP_M
+_RED_TRAPEZOID_DATUM_X_M = -10.805
+_RED_TRAPEZOID_MIN_X_M = _RED_TRAPEZOID_DATUM_X_M - _TRAPEZOID_OUTER_STRIP_M
 _RED_TRAPEZOID_MAX_Y_M = 7.400
-_RED_TRAPEZOID_MAX_X_M = _RED_TRAPEZOID_INNER_MIN_X_M + 6.707 + 3.798
+_RED_TRAPEZOID_MAX_X_M = _RED_TRAPEZOID_DATUM_X_M + 6.707 + 3.798
 _RED_TRAPEZOID_MIN_Y_M = _RED_TRAPEZOID_MAX_Y_M - _TRAPEZOID_SIZE_XY_M[1]
 _RED_TRAPEZOID_FOOTPRINT = (
-    (_RED_TRAPEZOID_MIN_X_M, _RED_TRAPEZOID_MAX_Y_M),
+    (_RED_TRAPEZOID_DATUM_X_M, _RED_TRAPEZOID_MAX_Y_M),
     (_RED_TRAPEZOID_MAX_X_M, _RED_TRAPEZOID_MAX_Y_M),
     (_RED_TRAPEZOID_MAX_X_M, _RED_TRAPEZOID_MAX_Y_M - _TRAPEZOID_STEP_M),
     (
-        _RED_TRAPEZOID_INNER_MIN_X_M + _TRAPEZOID_INNER_TOP_CHAIN_M,
+        _RED_TRAPEZOID_DATUM_X_M + _TRAPEZOID_INNER_TOP_CHAIN_M,
         _RED_TRAPEZOID_MAX_Y_M - _TRAPEZOID_STEP_M,
     ),
     (
-        _RED_TRAPEZOID_INNER_MIN_X_M + _TRAPEZOID_DIAGONAL_FOOT_M,
+        _RED_TRAPEZOID_DATUM_X_M + _TRAPEZOID_DIAGONAL_FOOT_M,
         _RED_TRAPEZOID_MIN_Y_M,
     ),
-    (_RED_TRAPEZOID_MIN_X_M, _RED_TRAPEZOID_MIN_Y_M),
+    (_RED_TRAPEZOID_DATUM_X_M + 2.361, _RED_TRAPEZOID_MIN_Y_M),
+    (_RED_TRAPEZOID_DATUM_X_M + 2.626, _RED_TRAPEZOID_MAX_Y_M - 2.922),
+    (_RED_TRAPEZOID_DATUM_X_M, _RED_TRAPEZOID_MAX_Y_M - 2.922),
 )
 
-# Manual V1.5.0 figure 4-34, printed p.60 (PDF p.61), dimensions the public
-# road envelope as 8901mm by 1561+2090mm. Intermediate outline vertices are
-# not tied to a complete global datum and therefore remain digitized [SIM].
+# Manual V1.5.0 figure 4-34, printed p.60 (PDF p.61). The 8.901m and
+# 1.561+2.090m dimensions define local control spans, not a complete road
+# polygon. This [DIGITIZED] footprint now snaps every inferred corner to a
+# published station instead of using rounded freehand coordinates.
 _ROAD_SIZE_XY_M = (8.901, 1.561 + 2.090)
 _RED_ROAD_MIN_X_M = -10.101
 _RED_ROAD_MIN_Y_M = -7.400
 _RED_ROAD_MAX_X_M = _RED_ROAD_MIN_X_M + _ROAD_SIZE_XY_M[0]
 _RED_ROAD_MAX_Y_M = _RED_ROAD_MIN_Y_M + _ROAD_SIZE_XY_M[1]
-_RED_ROAD_FOOTPRINT = (
+RED_ROAD_CONTROL_FOOTPRINT_XY_M = (
     (_RED_ROAD_MIN_X_M, _RED_ROAD_MIN_Y_M),
     (_RED_ROAD_MAX_X_M, _RED_ROAD_MIN_Y_M),
-    (_RED_ROAD_MAX_X_M, -6.15),
-    (-2.60, -6.15),
-    (-3.80, -4.15),
-    (-4.85, _RED_ROAD_MAX_Y_M),
+    (_RED_ROAD_MAX_X_M, -5.780),
+    (-2.709, -5.780),
+    (-3.797, _RED_ROAD_MAX_Y_M),
+    (-5.032, _RED_ROAD_MAX_Y_M),
     (_RED_ROAD_MIN_X_M, _RED_ROAD_MAX_Y_M),
 )
+_ROAD_X_STATIONS_M = (
+    -10.101,
+    -8.601,
+    -8.243,
+    -7.467,
+    -6.976,
+    -6.200,
+    -5.032,
+    -3.797,
+    -2.709,
+    -1.200,
+)
+_ROAD_Y_STATIONS_M = (-7.400, -5.780, -5.310, -3.749)
+TUNNEL_REFERENCE_LENGTH_M = 1.600  # [SIM]
+TUNNEL_OUTER_WIDTH_M = 0.800
+_TUNNEL_OPENING_WIDTH_M = 0.700
+_TUNNEL_SECTION_HEIGHTS_M = (0.250, 0.260)
+RED_TUNNEL_REFERENCE_CENTER_XY = (-4.05, -4.65)  # [SIM]
+RED_TUNNEL_REFERENCE_YAW_DEG = 35.0  # [SIM]
 
 # Manual V1.5.0 figure 4-25, printed p.52 (PDF p.53).
 _FORTRESS_OUTER_SIZE_XY_M = (2.240, 1.939)
@@ -293,9 +359,11 @@ _FORTRESS_OUTER_EDGE_M = 1.120
 _FORTRESS_INNER_EDGE_M = 0.653
 _FORTRESS_TOP_HEIGHT_M = 0.150
 
-# Manual V1.5.0 figures 4-5 and 4-36, printed pp.34 and 61 (PDF pp.35
-# and 62). Only the 2.560m length, 0.070m bump height, and 0.240m pitch are
-# published. Width and global placement remain diagram-derived [SIM].
+# Manual V1.5.0 figures 4-35 and 4-36, printed pp.60--61 (PDF pp.61--62).
+# Only the 0.070m bump height and 0.240m pitch are dimensioned. The 2.560m
+# arrow in figure 4-5 belongs to the adjacent supply-side passage, not the
+# rough-road strip. Its length, width, placement, and cosine profile remain
+# explicit Phase 1 [SIM] choices.
 _ROUGH_ROAD_LENGTH_M = 2.560
 _ROUGH_ROAD_WIDTH_M = 1.450
 _ROUGH_BUMP_HEIGHT_M = 0.070
@@ -306,6 +374,25 @@ _ROUGH_BUMP_PITCH_M = 0.240
 _FLY_RAMP_SIZE_XY_M = (1.145, 0.860)
 _FLY_RAMP_LOW_M = 0.203
 _FLY_RAMP_HIGH_M = 0.553
+_FLY_GAP_M = 0.650
+_FLY_LANDING_EDGE_SPAN_M = 1.143
+_FLY_LANDING_HEIGHT_M = 0.200
+_RED_FLY_RAMP_CENTER_XY = (-0.790, -6.900)  # [DIGITIZED], figure 4-5
+_RED_FLY_HIGH_EDGE_X_M = _RED_FLY_RAMP_CENTER_XY[0] + _FLY_RAMP_SIZE_XY_M[0] / 2
+_RED_FLY_LANDING_EDGE_X_M = _RED_FLY_HIGH_EDGE_X_M + _FLY_GAP_M
+# Figure 4-37's 1.143m value spans the landing edge transversely. The landing
+# depth along the ramp axis is not dimensioned, so only this reference edge is
+# encoded; no invented rectangular landing surface is added to the terrain.
+RED_FLY_LANDING_REFERENCE_EDGE_XY_M = (
+    (
+        _RED_FLY_LANDING_EDGE_X_M,
+        _RED_FLY_RAMP_CENTER_XY[1] - _FLY_LANDING_EDGE_SPAN_M / 2,
+    ),
+    (
+        _RED_FLY_LANDING_EDGE_X_M,
+        _RED_FLY_RAMP_CENTER_XY[1] + _FLY_LANDING_EDGE_SPAN_M / 2,
+    ),
+)
 _RED_FORTRESS_FOOTPRINT = (
     (-8.52, 0.00),
     (-7.96, -0.9695),
@@ -315,11 +402,14 @@ _RED_FORTRESS_FOOTPRINT = (
     (-7.96, 0.9695),
 )
 
-# Figure 4-27 (printed p.54/PDF p.55) identifies 10.5 degree connectors and
-# 200/300/350/400mm section levels. It does not uniquely map every section to
-# the crowned field or dimension every plan vertex. The selected 200-to-350mm
-# edge assignment and inset below are therefore [AMB]/[SIM].
-_CENTRAL_CONNECTOR_RUN_M = (0.35 - 0.20) / math.tan(math.radians(10.5))
+# Figure 4-27 (printed p.54/PDF p.55) directly dimensions a 1.000m plan band
+# and separately publishes a 10.5 degree slope plus 200/300/350/400mm section
+# levels. It does not uniquely map the band, angle, and levels to one surface.
+# Phase 1 retains a 200-to-350mm band as [INFERRED]; its resulting 8.53 degree
+# slope must not be labelled as the separate published 10.5 degree face.
+_CENTRAL_CONNECTOR_RUN_M = 1.000
+_CENTRAL_SECTION_LEVELS_M = (0.200, 0.300, 0.350, 0.400)
+_CENTRAL_SIDE_PROFILE_LENGTHS_M = (2.972, 1.421)
 _CENTRAL_LOW_RED = _CENTRAL_HIGHLAND_FOOTPRINT[1:3]
 _CENTRAL_LOW_BLUE = _CENTRAL_HIGHLAND_FOOTPRINT[4:6]
 _CENTRAL_HIGH_RED = _inset_edge(*_CENTRAL_LOW_RED, _CENTRAL_CONNECTOR_RUN_M)
@@ -345,35 +435,32 @@ _CENTRAL_BLUE_CONNECTOR_FOOTPRINT = (
     _CENTRAL_HIGH_BLUE[0],
 )
 
-# Figure 4-26 (printed p.53/PDF p.54) establishes 200--400mm surfaces and
-# 23/43 degree transitions.
-# The exact global patch boundaries are not independently dimensioned in
-# figure 4-5, so these plan placements remain [SIM] while their elevations,
-# slope angles, and footprint envelope follow the official detail.
-_RED_TRAPEZOID_350_TOP = (
-    (-3.737, 6.40),
-    (-0.30, 6.40),
-    (-0.30, 7.40),
-    (-3.737, 7.40),
-)
+# Figure 4-26 establishes a 200mm main deck, a 400mm small gain platform,
+# and 23/43 degree edges down to the field. The drawing's 350/600mm arrows
+# terminate on guard strips; they are not drive-surface elevations.
+_TRAPEZOID_23_RUN_M = 0.200 / math.tan(math.radians(23.0))
+_TRAPEZOID_43_RUN_M = 0.400 / math.tan(math.radians(43.0))
+
+
 _RED_TRAPEZOID_23_RAMP = (
-    (-4.090, 6.40),
-    (-3.737, 6.40),
-    (-3.737, 7.40),
-    (-4.090, 7.40),
+    (-3.706802, 6.134387),
+    (-6.113831, 2.548830),
+    (-8.444000, 2.548830),
+    (-8.444000, 3.020000),
+    (-6.365000, 3.020000),
+    (-4.098000, 6.397000),
 )
 _RED_TRAPEZOID_400_TOP = (
-    (-10.65, 3.17),
-    (-9.50, 3.17),
-    (-9.50, 4.37),
-    (-10.65, 4.37),
+    (-10.805, 4.328),
+    (-8.444, 4.328),
+    (-8.954, 3.128),
+    (-10.805, 3.128),
 )
-_TRAPEZOID_43_RUN_M = (0.40 - 0.20) / math.tan(math.radians(43.0))
 _RED_TRAPEZOID_43_RAMP = (
-    (-9.50, 3.17),
-    (-9.50 + _TRAPEZOID_43_RUN_M, 3.17),
-    (-9.50 + _TRAPEZOID_43_RUN_M, 4.37),
-    (-9.50, 4.37),
+    (-10.805, 3.128 - _TRAPEZOID_43_RUN_M),
+    (-9.655, 3.128 - _TRAPEZOID_43_RUN_M),
+    (-9.655, 3.128),
+    (-10.805, 3.128),
 )
 
 
@@ -444,47 +531,20 @@ def _fortress_surfaces(
 
 
 DEFAULT_TERRAIN: tuple[TerrainPrimitive, ...] = (
-    # Figure 4-34 fixes the public-road envelope. Phase 1 keeps it at field
-    # height: the drawing shows 11/15 degree faces and 250/260mm section
-    # levels, but does not unambiguously map those sections onto the plan
-    # drawing and crowned datum. Those internal surfaces remain [AMB].
-    TerrainPrimitive(
-        "red_road",
-        (
-            (_RED_ROAD_MIN_X_M + _RED_ROAD_MAX_X_M) / 2,
-            (_RED_ROAD_MIN_Y_M + _RED_ROAD_MAX_Y_M) / 2,
-        ),
-        _ROAD_SIZE_XY_M,
-        0.0,
-        0.0,
-        category="road",
-        team=0,
-        footprint_xy=_RED_ROAD_FOOTPRINT,
-    ),
-    TerrainPrimitive(
-        "blue_road",
-        (
-            -(_RED_ROAD_MIN_X_M + _RED_ROAD_MAX_X_M) / 2,
-            -(_RED_ROAD_MIN_Y_M + _RED_ROAD_MAX_Y_M) / 2,
-        ),
-        _ROAD_SIZE_XY_M,
-        0.0,
-        0.0,
-        yaw_deg=180.0,
-        category="road",
-        team=1,
-        footprint_xy=_center_symmetric(_RED_ROAD_FOOTPRINT),
-    ),
-    # Figure 4-26 gives an irregular 10.805m x 4.380m outer footprint; the
-    # inset red-line span is 10.505m. Its 200--400mm surfaces and 23/43 degree
-    # faces remain separate instead of being flattened to one 300mm deck.
+    # Figure 4-34 fixes the road station grid, 11/15 degree faces, and section
+    # heights, but does not uniquely map those faces into a closed world
+    # surface. Its dimension-constrained plan is rendered as a dashed reference
+    # and deliberately omitted here rather than simulated as a false flat deck.
+    # Figure 4-26 gives a 10.805m control span containing a 10.505m main-deck
+    # chain. The driving deck is 200mm; 350/600mm labels belong to guard
+    # strips, not extra plateaus.
     TerrainPrimitive(
         "red_trapezoid_highland",
         (
-            (_RED_TRAPEZOID_MIN_X_M + _RED_TRAPEZOID_MAX_X_M) / 2,
+            (_RED_TRAPEZOID_DATUM_X_M + _RED_TRAPEZOID_MAX_X_M) / 2,
             (_RED_TRAPEZOID_MIN_Y_M + _RED_TRAPEZOID_MAX_Y_M) / 2,
         ),
-        _TRAPEZOID_SIZE_XY_M,
+        (6.707 + 3.798, _TRAPEZOID_SIZE_XY_M[1]),
         0.20,
         0.20,
         category="trapezoid",
@@ -494,10 +554,10 @@ DEFAULT_TERRAIN: tuple[TerrainPrimitive, ...] = (
     TerrainPrimitive(
         "blue_trapezoid_highland",
         (
-            -(_RED_TRAPEZOID_MIN_X_M + _RED_TRAPEZOID_MAX_X_M) / 2,
+            -(_RED_TRAPEZOID_DATUM_X_M + _RED_TRAPEZOID_MAX_X_M) / 2,
             -(_RED_TRAPEZOID_MIN_Y_M + _RED_TRAPEZOID_MAX_Y_M) / 2,
         ),
-        _TRAPEZOID_SIZE_XY_M,
+        (6.707 + 3.798, _TRAPEZOID_SIZE_XY_M[1]),
         0.20,
         0.20,
         yaw_deg=180.0,
@@ -507,36 +567,23 @@ DEFAULT_TERRAIN: tuple[TerrainPrimitive, ...] = (
     ),
     *_paired_surfaces(
         TerrainPrimitive(
-            "red_trapezoid_350_top",
-            (-2.0185, 6.90),
-            (3.437, 1.0),
-            0.35,
-            0.35,
-            category="trapezoid_top",
-            team=0,
-            footprint_xy=_RED_TRAPEZOID_350_TOP,
-        ),
-        blue_name="blue_trapezoid_350_top",
-    ),
-    *_paired_surfaces(
-        TerrainPrimitive(
             "red_trapezoid_23_ramp",
-            (-3.9135, 6.90),
-            (0.353, 1.0),
+            (-6.075, 4.473),
+            (4.737, 3.848),
+            0.0,
             0.20,
-            0.35,
             category="trapezoid_slope",
             team=0,
             footprint_xy=_RED_TRAPEZOID_23_RAMP,
-            vertex_elevations_m=(0.20, 0.35, 0.35, 0.20),
+            vertex_elevations_m=(0.0, 0.0, 0.0, 0.20, 0.20, 0.20),
         ),
         blue_name="blue_trapezoid_23_ramp",
     ),
     *_paired_surfaces(
         TerrainPrimitive(
             "red_trapezoid_400_top",
-            (-10.075, 3.77),
-            (1.15, 1.20),
+            (-9.6245, 3.728),
+            (2.361, 1.20),
             0.40,
             0.40,
             category="trapezoid_top",
@@ -548,20 +595,20 @@ DEFAULT_TERRAIN: tuple[TerrainPrimitive, ...] = (
     *_paired_surfaces(
         TerrainPrimitive(
             "red_trapezoid_43_ramp",
-            (-9.50 + _TRAPEZOID_43_RUN_M / 2, 3.77),
-            (_TRAPEZOID_43_RUN_M, 1.20),
-            0.20,
+            (-10.230, 3.128 - _TRAPEZOID_43_RUN_M / 2),
+            (1.150, _TRAPEZOID_43_RUN_M),
+            0.0,
             0.40,
             category="trapezoid_slope",
             team=0,
             footprint_xy=_RED_TRAPEZOID_43_RAMP,
-            vertex_elevations_m=(0.40, 0.20, 0.20, 0.40),
+            vertex_elevations_m=(0.0, 0.0, 0.40, 0.40),
         ),
         blue_name="blue_trapezoid_43_ramp",
     ),
-    # Figure 4-27 publishes the 7.700m x 10.820m envelope. Its unlabelled
-    # internal plan vertices and the mapping of 200/300/350/400mm section
-    # levels onto the crowned datum remain [AMB]; these patches are [SIM].
+    # Figure 4-27 publishes 7.700m x 10.820m control bounds and a 1.000m
+    # connector band. The two chamfer intercepts and assignment of section
+    # levels remain explicitly [DIGITIZED]/[INFERRED].
     TerrainPrimitive(
         "central_highland",
         (0.0, 0.0),
@@ -602,37 +649,16 @@ DEFAULT_TERRAIN: tuple[TerrainPrimitive, ...] = (
         footprint_xy=_CENTRAL_BLUE_CONNECTOR_FOOTPRINT,
         vertex_elevations_m=(0.20, 0.20, 0.35, 0.35),
     ),
-    # Figures 4-28 and 4-29 (printed pp.55--56/PDF pp.56--57) publish local
-    # edge lengths/angles and 12/14/15/45 degree slopes, but no complete global
-    # datum or vertex-height triangulation. These flat Phase 1 overlays and
-    # their digitized footprints are [AMB]/[SIM], not official slope geometry.
-    TerrainPrimitive(
-        "red_assembly",
-        (-0.875, 0.60),
-        (2.05, 1.90),
-        0.35,
-        0.35,
-        category="assembly",
-        team=0,
-        footprint_xy=_RED_ASSEMBLY_FOOTPRINT,
-    ),
-    TerrainPrimitive(
-        "blue_assembly",
-        (0.875, -0.60),
-        (2.05, 1.90),
-        0.35,
-        0.35,
-        yaw_deg=180.0,
-        category="assembly",
-        team=1,
-        footprint_xy=_center_symmetric(_RED_ASSEMBLY_FOOTPRINT),
-    ),
+    # Figures 4-28/4-29 publish an edge chain, 100/200mm levels, and several
+    # face angles, but not enough plan-to-section mapping for one non-planar
+    # polygon. The chain remains a dashed reference instead of generating
+    # arbitrary triangulation or overlapping the central 350mm approximation.
     # Figure 4-37: 17 degree face, 1.145m horizontal run, 0.860m width,
     # and 0.203m/0.553m edge elevations. The separate 0.650m value is the
     # flight gap and must not be added to the ramp footprint.
     TerrainPrimitive(
         "red_fly_ramp",
-        (-0.79, -6.90),
+        _RED_FLY_RAMP_CENTER_XY,
         _FLY_RAMP_SIZE_XY_M,
         _FLY_RAMP_LOW_M,
         _FLY_RAMP_HIGH_M,
@@ -641,7 +667,7 @@ DEFAULT_TERRAIN: tuple[TerrainPrimitive, ...] = (
     ),
     TerrainPrimitive(
         "blue_fly_ramp",
-        (0.79, 6.90),
+        (-_RED_FLY_RAMP_CENTER_XY[0], -_RED_FLY_RAMP_CENTER_XY[1]),
         _FLY_RAMP_SIZE_XY_M,
         _FLY_RAMP_LOW_M,
         _FLY_RAMP_HIGH_M,
@@ -681,34 +707,30 @@ DEFAULT_TERRAIN: tuple[TerrainPrimitive, ...] = (
         center_xy=BLUE_FORTRESS_CENTER_XY,
         outer=_center_symmetric(_RED_FORTRESS_FOOTPRINT),
     ),
-    # Figure 4-34 publishes the 0.700m opening and 0.800m roof width but not
-    # a standalone global center dimension. The plan placement remains [SIM].
-    TerrainPrimitive(
-        "red_tunnel",
-        (-4.05, -4.65),
-        (1.6, 0.8),
-        0.0,
-        0.0,
-        yaw_deg=35.0,
-        category="tunnel",
-        team=0,
-    ),
-    TerrainPrimitive(
-        "blue_tunnel",
-        (4.05, 4.65),
-        (1.6, 0.8),
-        0.0,
-        0.0,
-        yaw_deg=215.0,
-        category="tunnel",
-        team=1,
-    ),
+    # Figure 4-34 publishes a 0.700m opening, 0.800m outer width, and
+    # 0.250/0.260m section dimensions, but not a unique axis length, center,
+    # yaw, or height interpretation. A dashed reference is rendered instead
+    # of maintaining contradictory Torch, Isaac, and 2D tunnel geometries.
 )
+
+
+def _regular_polygon_xy(
+    center_xy: tuple[float, float],
+    radius_m: float,
+    sides: int,
+) -> tuple[tuple[float, float], ...]:
+    return tuple(
+        (
+            center_xy[0] + radius_m * math.cos(2.0 * math.pi * index / sides),
+            center_xy[1] + radius_m * math.sin(2.0 * math.pi * index / sides),
+        )
+        for index in range(sides)
+    )
 
 
 @dataclass(frozen=True)
 class ArenaConfig:
-    """Official arena bounds plus explicit ``[SIM]`` geometry choices."""
+    """Official nominal constraints plus explicit geometry provenance."""
 
     field_length_m: float = 28.0
     field_width_m: float = 15.0
@@ -1104,8 +1126,6 @@ class ArenaGeometry:
             dtype=position_xy.dtype,
         )
         for index, primitive in enumerate(self.config.terrain):
-            if primitive.category == "tunnel":
-                continue
             offset = position_xy - centers[index]
             local_x = cosine[index] * offset[..., 0] - sine[index] * offset[..., 1]
             local_y = sine[index] * offset[..., 0] + cosine[index] * offset[..., 1]
@@ -1235,7 +1255,7 @@ class ArenaGeometry:
         device: torch.device | str,
         dtype: torch.dtype,
     ) -> Tensor:
-        """Return Phase 1 ``[SIM]`` axis-aligned region half extents."""
+        """Return Phase 1 ``[SIM]`` rule-region half extents."""
 
         return torch.tensor(
             ZONE_HALF_EXTENTS_XY_M,

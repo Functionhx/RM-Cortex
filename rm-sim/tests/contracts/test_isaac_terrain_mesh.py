@@ -53,10 +53,11 @@ def _primitive_surface_height(
         "central_highland",
         "central_plateau",
         "red_trapezoid_highland",
-        "red_road",
         "red_fortress",
         "red_fortress_top",
         "central_red_connector",
+        "red_trapezoid_23_ramp",
+        "red_trapezoid_43_ramp",
     ),
 )
 def test_isaac_mesh_surface_vertices_match_crowned_torch_terrain(
@@ -95,6 +96,8 @@ def test_isaac_mesh_surface_vertices_match_crowned_torch_terrain(
         "red_fortress",
         "red_fortress_top",
         "central_red_connector",
+        "red_trapezoid_23_ramp",
+        "red_trapezoid_43_ramp",
     ),
 )
 def test_isaac_mesh_face_interiors_match_torch_and_form_a_closed_prism(
@@ -152,7 +155,7 @@ def test_isaac_mesh_face_interiors_match_torch_and_form_a_closed_prism(
 
 def test_isaac_mesh_bottom_follows_the_field_crown_per_vertex() -> None:
     arena = ArenaGeometry()
-    primitive = next(item for item in arena.config.terrain if item.name == "red_road")
+    primitive = next(item for item in arena.config.terrain if item.name == "central_highland")
     mesh = build_terrain_prism_mesh_data(
         primitive,
         field_width_m=arena.config.field_width_m,

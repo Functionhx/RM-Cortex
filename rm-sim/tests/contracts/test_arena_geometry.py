@@ -22,12 +22,20 @@ from rm_world import (
     WorldActions,
 )
 from rm_world.arena import (
-    AERIAL_PAD_LANDING_SIZE_XY_M,
-    AERIAL_PAD_LANDING_STRAIGHT_EDGE_M,
-    AERIAL_PAD_OUTER_ENVELOPE_SIZE_XY_M,
+    AERIAL_PAD_FRAME_MEMBER_LENGTH_M,
+    AERIAL_PAD_INNER_FRAME_SPAN_XY_M,
+    AERIAL_PAD_FRAME_REFERENCE_SPANS_XY_M,
     BASE_PEDESTAL_SIZE_XY_M,
-    OUTPOST_BODY_DIAMETER_M,
+    OUTPOST_ARMOR_SWEEP_DIAMETER_M,
     OUTPOST_PEDESTAL_WIDTH_M,
+    RED_ASSEMBLY_REFERENCE_FOOTPRINT_XY_M,
+    RED_BASE_PEDESTAL_FOOTPRINT_XY_M,
+    RED_FLY_LANDING_REFERENCE_EDGE_XY_M,
+    RED_ROAD_CONTROL_FOOTPRINT_XY_M,
+    RED_STARTING_ZONE_FOOTPRINT_XY_M,
+    RED_TUNNEL_REFERENCE_CENTER_XY,
+    TUNNEL_OUTER_WIDTH_M,
+    TUNNEL_REFERENCE_LENGTH_M,
     ZONE_HALF_EXTENTS_XY_M,
 )
 
@@ -69,26 +77,41 @@ def test_manual_figure_4_5_feature_centers_use_center_coordinates() -> None:
 
 def test_published_structure_envelopes_match_the_manual() -> None:
     assert BASE_PEDESTAL_SIZE_XY_M == pytest.approx((1.609, 1.881))
-    assert OUTPOST_BODY_DIAMETER_M == pytest.approx(0.550)
+    base = torch.tensor(RED_BASE_PEDESTAL_FOOTPRINT_XY_M)
+    assert (base.amax(dim=0) - base.amin(dim=0)).tolist() == pytest.approx((1.609, 1.881))
+    assert OUTPOST_ARMOR_SWEEP_DIAMETER_M == pytest.approx(0.550)
     assert OUTPOST_PEDESTAL_WIDTH_M == pytest.approx(0.650)
-    assert AERIAL_PAD_OUTER_ENVELOPE_SIZE_XY_M == pytest.approx((2.200, 2.858))
-    assert AERIAL_PAD_LANDING_SIZE_XY_M == pytest.approx((2.149, 2.200))
-    assert AERIAL_PAD_LANDING_STRAIGHT_EDGE_M == pytest.approx(1.334)
+    assert AERIAL_PAD_FRAME_REFERENCE_SPANS_XY_M == pytest.approx((2.200, 2.858))
+    assert AERIAL_PAD_INNER_FRAME_SPAN_XY_M == pytest.approx((2.149, 2.200))
+    assert AERIAL_PAD_FRAME_MEMBER_LENGTH_M == pytest.approx(1.334)
 
 
-@pytest.mark.parametrize(
-    ("name", "expected_size"),
-    (
-        ("red_trapezoid_highland", (10.805, 4.380)),
-        ("red_road", (8.901, 3.651)),
-    ),
-)
-def test_published_plan_envelopes_match_polygon_bounds(
-    name: str,
-    expected_size: tuple[float, float],
-) -> None:
+def test_base_figure_4_9_dimension_chain_is_not_replaced_by_a_rectangle() -> None:
+    base = torch.tensor(RED_BASE_PEDESTAL_FOOTPRINT_XY_M, dtype=torch.float64)
+    local = base - torch.tensor(RED_BASE_CENTER_XY, dtype=torch.float64)
+
+    assert local[0].tolist() == pytest.approx((-0.752, 0.5445))
+    assert local[1].tolist() == pytest.approx((-0.087, 0.9405))
+    assert local[2, 0].item() == pytest.approx(0.857)
+    assert local[2, 1].item() == pytest.approx(0.390)  # [DIGITIZED] front half-width
+    mirrored_lower = torch.flip(local[3:], dims=(0,))
+    assert torch.allclose(local[:3, 0], mirrored_lower[:, 0])
+    assert torch.allclose(local[:3, 1], -mirrored_lower[:, 1])
+
+
+def test_figure_4_8_starting_zone_keeps_its_offset_hexagon() -> None:
+    points = torch.tensor(RED_STARTING_ZONE_FOOTPRINT_XY_M, dtype=torch.float64)
+    bounds = points.amax(dim=0) - points.amin(dim=0)
+
+    assert bounds.tolist() == pytest.approx((3.355, 3.906))
+    assert points[:, 0].mean().item() != pytest.approx(RED_BASE_CENTER_XY[0])
+    blue = torch.tensor(tuple((-x, -y) for x, y in reversed(RED_STARTING_ZONE_FOOTPRINT_XY_M)))
+    assert torch.cdist(-points.to(torch.float32), blue).amin(dim=1).amax() < 1.0e-6
+
+
+def test_trapezoid_control_bounds_keep_metric_scale() -> None:
     arena = ArenaGeometry()
-    primitive = next(item for item in arena.config.terrain if item.name == name)
+    primitive = next(item for item in arena.config.terrain if item.name == "red_trapezoid_highland")
     corners = arena.terrain_corners(
         primitive,
         device="cpu",
@@ -96,8 +119,8 @@ def test_published_plan_envelopes_match_polygon_bounds(
     )
     bounds = corners.amax(dim=0) - corners.amin(dim=0)
 
-    assert primitive.size_xy == pytest.approx(expected_size)
-    assert bounds.tolist() == pytest.approx(expected_size, abs=1.0e-9)
+    assert primitive.size_xy == pytest.approx((10.505, 4.380))
+    assert bounds.tolist() == pytest.approx((10.505, 4.380), abs=1.0e-9)
 
 
 def test_trapezoid_figure_4_26_uses_the_published_dimension_chain() -> None:
@@ -105,13 +128,78 @@ def test_trapezoid_figure_4_26_uses_the_published_dimension_chain() -> None:
     trapezoid = next(item for item in arena.config.terrain if item.name == "red_trapezoid_highland")
     points = trapezoid.footprint_xy
 
-    inner_min_x = points[0][0] + 0.300
-    assert points[1][0] - points[0][0] == pytest.approx(0.300 + 6.707 + 3.798)
-    assert points[0][1] - points[5][1] == pytest.approx(4.380)
+    assert points[1][0] - points[0][0] == pytest.approx(6.707 + 3.798)
+    assert points[0][1] - points[4][1] == pytest.approx(4.380)
     assert points[0][1] - points[2][1] == pytest.approx(1.003)
-    assert points[3][0] - inner_min_x == pytest.approx(6.707)
+    assert points[3][0] - points[0][0] == pytest.approx(6.707)
     assert points[1][0] - points[3][0] == pytest.approx(3.798)
-    assert points[4][0] - inner_min_x == pytest.approx(4.440)
+    assert points[4][0] - points[0][0] == pytest.approx(4.440)
+    assert points[5][0] - points[0][0] == pytest.approx(2.361)
+    assert points[6][0] - points[0][0] == pytest.approx(2.626)
+    assert points[0][1] - points[6][1] == pytest.approx(2.922)
+
+
+def test_trapezoid_surface_heights_do_not_treat_guard_rails_as_decks() -> None:
+    arena = ArenaGeometry()
+    by_name = {primitive.name: primitive for primitive in arena.config.terrain}
+    deck = by_name["red_trapezoid_highland"]
+    gain = by_name["red_trapezoid_400_top"]
+    ramp_23 = by_name["red_trapezoid_23_ramp"]
+    ramp_43 = by_name["red_trapezoid_43_ramp"]
+
+    assert (deck.elevation_start_m, deck.elevation_end_m) == pytest.approx((0.20, 0.20))
+    assert (gain.elevation_start_m, gain.elevation_end_m) == pytest.approx((0.40, 0.40))
+    assert "red_trapezoid_350_top" not in by_name
+    assert math.dist(ramp_23.footprint_xy[0], ramp_23.footprint_xy[5]) == pytest.approx(
+        0.200 / math.tan(math.radians(23.0)),
+        abs=2.0e-6,
+    )
+    assert math.dist(ramp_43.footprint_xy[0], ramp_43.footprint_xy[3]) == pytest.approx(
+        0.400 / math.tan(math.radians(43.0)),
+        abs=2.0e-6,
+    )
+    assert ramp_23.vertex_elevations_m == pytest.approx((0.0, 0.0, 0.0, 0.2, 0.2, 0.2))
+    assert ramp_43.vertex_elevations_m == pytest.approx((0.0, 0.0, 0.4, 0.4))
+
+
+def test_assembly_reference_keeps_nominal_chain_without_inventing_faces() -> None:
+    edge_lengths = [
+        math.dist(start, end)
+        for start, end in zip(
+            RED_ASSEMBLY_REFERENCE_FOOTPRINT_XY_M[:-1],
+            RED_ASSEMBLY_REFERENCE_FOOTPRINT_XY_M[1:],
+            strict=True,
+        )
+    ]
+
+    assert edge_lengths == pytest.approx((1.220, 1.411, 0.383, 0.995), abs=2.0e-6)
+    assert not any("assembly" in item.name for item in ArenaGeometry().config.terrain)
+
+
+def test_road_inferred_corners_snap_to_published_figure_4_34_stations() -> None:
+    assert torch.allclose(
+        torch.tensor(RED_ROAD_CONTROL_FOOTPRINT_XY_M),
+        torch.tensor(
+            (
+                (-10.101, -7.400),
+                (-1.200, -7.400),
+                (-1.200, -5.780),
+                (-2.709, -5.780),
+                (-3.797, -3.749),
+                (-5.032, -3.749),
+                (-10.101, -3.749),
+            )
+        ),
+    )
+    assert all(y != pytest.approx(-6.15) for _, y in RED_ROAD_CONTROL_FOOTPRINT_XY_M)
+    assert not any("road" == item.category for item in ArenaGeometry().config.terrain)
+
+
+def test_tunnel_stays_a_reference_until_sections_can_be_mapped() -> None:
+    assert TUNNEL_OUTER_WIDTH_M == pytest.approx(0.800)
+    assert TUNNEL_REFERENCE_LENGTH_M == pytest.approx(1.600)  # [SIM]
+    assert RED_TUNNEL_REFERENCE_CENTER_XY == pytest.approx((-4.05, -4.65))  # [SIM]
+    assert not any("tunnel" == item.category for item in ArenaGeometry().config.terrain)
 
 
 def test_zone_geometry_has_one_shared_source_for_centers_and_extents() -> None:
@@ -154,7 +242,7 @@ def test_central_highland_uses_the_figure_4_27_polygon_not_a_rectangle() -> None
 
 @pytest.mark.parametrize(
     "feature",
-    ("road", "trapezoid_highland", "assembly", "fly_ramp", "rough_road", "fortress", "tunnel"),
+    ("trapezoid_highland", "fly_ramp", "rough_road", "fortress"),
 )
 def test_paired_terrain_footprints_are_center_symmetric(feature: str) -> None:
     arena = ArenaGeometry()
@@ -175,14 +263,12 @@ def test_paired_terrain_footprints_are_center_symmetric(feature: str) -> None:
     assert (distance.amin(dim=1) < 1.0e-5).all()
 
 
-def test_rough_road_models_figure_4_36_bump_height_and_pitch() -> None:
+def test_rough_road_models_only_the_dimensioned_bump_height_and_pitch() -> None:
     arena = ArenaGeometry()
-    rough = next(item for item in arena.config.terrain if item.name == "red_rough_road")
     peak_trough_peak = torch.tensor(((-7.60, -6.25), (-7.48, -6.25), (-7.36, -6.25)))
 
     heights = arena._terrain_height_analytic(peak_trough_peak)
 
-    assert rough.size_xy[0] == pytest.approx(2.560)
     assert heights[0] - heights[1] == pytest.approx(0.070, abs=1.0e-5)
     assert heights[0] == pytest.approx(heights[2], abs=1.0e-5)
 
@@ -200,6 +286,12 @@ def test_fly_ramp_matches_figure_4_37_dimensions_and_slope() -> None:
     assert ramp.size_xy == pytest.approx((1.145, 0.860))
     assert (ramp.elevation_start_m, ramp.elevation_end_m) == pytest.approx((0.203, 0.553))
     assert slope_deg == pytest.approx(17.0, abs=0.05)
+    ramp_high_edge = ramp.center_xy[0] + ramp.size_xy[0] / 2
+    landing_x = RED_FLY_LANDING_REFERENCE_EDGE_XY_M[0][0]
+    landing_span = math.dist(*RED_FLY_LANDING_REFERENCE_EDGE_XY_M)
+    assert landing_x - ramp_high_edge == pytest.approx(0.650)
+    assert landing_span == pytest.approx(1.143)
+    assert not any("fly_landing" in item.name for item in arena.config.terrain)
 
 
 def test_polygonal_slope_vertices_match_their_terrain_elevations() -> None:

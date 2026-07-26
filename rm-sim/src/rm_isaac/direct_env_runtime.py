@@ -45,7 +45,7 @@ from rm_referee.state import GameState
 from rm_world.actions import WorldActions
 from rm_world.arena import (
     BASE_PEDESTAL_SIZE_XY_M,
-    OUTPOST_BODY_DIAMETER_M,
+    OUTPOST_ARMOR_SWEEP_DIAMETER_M,
     ArenaGeometry,
     TerrainPrimitive,
 )
@@ -147,8 +147,6 @@ def _quaternion_from_euler(
 
 
 def _terrain_color(primitive: TerrainPrimitive) -> tuple[float, float, float]:
-    if primitive.category == "tunnel":
-        return (0.04, 0.07, 0.09)
     if primitive.vertex_elevations_m:
         elevation = sum(primitive.vertex_elevations_m) / len(primitive.vertex_elevations_m)
     else:
@@ -181,8 +179,10 @@ def _unit_marker(role: int, team: int) -> object:
         size = (*BASE_PEDESTAL_SIZE_XY_M, 1.18)
     elif role == Role.OUTPOST:
         color = (0.10, 0.24, 0.58) if team == Team.BLUE else (0.58, 0.10, 0.12)
+        # Visualization marker only: figure 4-33 dimensions the rotating armor
+        # sweep envelope, not a solid cylindrical outpost body.
         return sim_utils.CylinderCfg(
-            radius=OUTPOST_BODY_DIAMETER_M / 2,
+            radius=OUTPOST_ARMOR_SWEEP_DIAMETER_M / 2,
             height=1.88,
             visual_material=sim_utils.PreviewSurfaceCfg(
                 diffuse_color=color,
@@ -337,21 +337,6 @@ class RMCortexDirectMARLEnv(DirectMARLEnv):
             ) * math.tan(
                 crown_angle,
             )
-            if primitive.category == "tunnel":
-                roof_cfg = sim_utils.CuboidCfg(
-                    size=(*primitive.size_xy, 0.08),
-                    visual_material=sim_utils.PreviewSurfaceCfg(
-                        diffuse_color=_terrain_color(primitive),
-                        metallic=0.25,
-                    ),
-                )
-                roof_cfg.func(
-                    f"/World/envs/env_0/Terrain_{primitive.name}",
-                    roof_cfg,
-                    translation=(*primitive.center_xy, crown + 0.48),
-                    orientation=_quaternion_from_euler(yaw=yaw),
-                )
-                continue
             if primitive.category == "rough":
                 base_cfg = sim_utils.CuboidCfg(
                     size=(*primitive.size_xy, 0.025),

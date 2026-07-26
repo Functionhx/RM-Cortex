@@ -263,8 +263,8 @@ def test_nearly_parallel_segment_still_detects_an_obstacle_crossing() -> None:
 def test_traversable_arena_slope_is_not_added_to_static_occupancy() -> None:
     arena = ArenaGeometry()
     planner = GridAStarPlanner(arena, resolution_m=0.1)
-    start = torch.tensor((-4.5, 6.9))
-    goal = torch.tensor((-3.4, 6.9))
+    start = torch.tensor((-3.7, 6.13))
+    goal = torch.tensor((-4.1, 6.40))
 
     result = planner.plan(start, goal)
     path = result.path()

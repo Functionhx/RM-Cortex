@@ -23,11 +23,18 @@ from rm_world import (
     tactical_phase_label,
 )
 from rm_world.arena import (
-    AERIAL_PAD_LANDING_SIZE_XY_M,
-    AERIAL_PAD_LANDING_STRAIGHT_EDGE_M,
-    AERIAL_PAD_OUTER_ENVELOPE_SIZE_XY_M,
+    AERIAL_PAD_FRAME_REFERENCE_SPANS_XY_M,
+    AERIAL_PAD_PLATFORM_VISUAL_SIZE_XY_M,
     BASE_PEDESTAL_SIZE_XY_M,
-    OUTPOST_BODY_DIAMETER_M,
+    OUTPOST_ARMOR_SWEEP_DIAMETER_M,
+    RED_ASSEMBLY_REFERENCE_FOOTPRINT_XY_M,
+    RED_BASE_PEDESTAL_FOOTPRINT_XY_M,
+    RED_FLY_LANDING_REFERENCE_EDGE_XY_M,
+    RED_ROAD_CONTROL_FOOTPRINT_XY_M,
+    RED_TUNNEL_REFERENCE_CENTER_XY,
+    RED_TUNNEL_REFERENCE_YAW_DEG,
+    TUNNEL_OUTER_WIDTH_M,
+    TUNNEL_REFERENCE_LENGTH_M,
 )
 from rm_world.geometry import resolve_target_slots
 
@@ -48,25 +55,21 @@ HEIGHT_STOPS = (
     (0.55, (180, 194, 192)),
 )
 FEATURE_LABELS = {
-    "central_highland": "CENTRAL · 7.700×10.820m",
-    "red_trapezoid_highland": "TRAPEZOID · 10.805×4.380m",
-    "blue_trapezoid_highland": "TRAPEZOID · 10.805×4.380m",
-    "red_road": "ROAD · 8.901×3.651m",
-    "blue_road": "ROAD · 8.901×3.651m",
-    "red_rough_road": "BUMPS · 70mm/240mm",
-    "blue_rough_road": "BUMPS · 70mm/240mm",
+    "central_highland": "CENTRAL CONTROL · 7.700×10.820m",
+    "red_trapezoid_highland": "TRAPEZOID DECK · 0.20m",
+    "blue_trapezoid_highland": "TRAPEZOID DECK · 0.20m",
+    "red_rough_road": "BUMPS · 70mm/240mm · [SIM] STRIP",
+    "blue_rough_road": "BUMPS · 70mm/240mm · [SIM] STRIP",
     "red_fortress": "FORT · 2.240×1.939m",
     "blue_fortress": "FORT · 2.240×1.939m",
-    "red_tunnel": "TUNNEL",
-    "blue_tunnel": "TUNNEL",
 }
 SLOPE_LABELS = {
     "red_trapezoid_23_ramp": "23°",
     "blue_trapezoid_23_ramp": "23°",
     "red_trapezoid_43_ramp": "43°",
     "blue_trapezoid_43_ramp": "43°",
-    "central_red_connector": "10.5°",
-    "central_blue_connector": "10.5°",
+    "central_red_connector": "1m BAND [AMB]",
+    "central_blue_connector": "1m BAND [AMB]",
     "red_fly_ramp": "FLY · 17°",
     "blue_fly_ramp": "FLY · 17°",
 }
@@ -233,6 +236,41 @@ def _rectangle_points(
             (-half_x, half_y),
         )
     ]
+
+
+def _draw_dashed_polyline(
+    draw: object,
+    points: tuple[tuple[int, int], ...] | list[tuple[int, int]],
+    *,
+    fill: tuple[int, int, int],
+    width: int,
+    dash_px: float = 7.0,
+    gap_px: float = 5.0,
+) -> None:
+    """Draw a deterministic dashed polyline without implying a solid boundary."""
+
+    for start, end in zip(points, points[1:], strict=False):
+        delta_x = end[0] - start[0]
+        delta_y = end[1] - start[1]
+        length = math.hypot(delta_x, delta_y)
+        if length <= 0.0:
+            continue
+        unit_x = delta_x / length
+        unit_y = delta_y / length
+        cursor = 0.0
+        while cursor < length:
+            segment_end = min(cursor + dash_px, length)
+            draw.line(
+                (
+                    round(start[0] + unit_x * cursor),
+                    round(start[1] + unit_y * cursor),
+                    round(start[0] + unit_x * segment_end),
+                    round(start[1] + unit_y * segment_end),
+                ),
+                fill=fill,
+                width=width,
+            )
+            cursor += dash_px + gap_px
 
 
 def _terrain_points(arena: object, primitive: object) -> list[tuple[int, int]]:
@@ -440,29 +478,8 @@ def _draw_static(
     for primitive in arena.config.terrain:
         points = _terrain_points(arena, primitive)
         team_color = RED if primitive.team == Team.RED else BLUE
-        primary_surface = primitive.name in FEATURE_LABELS or primitive.category == "assembly"
+        primary_surface = primitive.name in FEATURE_LABELS
         outline = (151, 168, 175) if primitive.team is None else team_color
-        if primitive.category == "tunnel":
-            draw.polygon(points, fill=_height_color(0.10))
-            shoulder = _rectangle_points(
-                primitive.center_xy,
-                (primitive.size_xy[0] * 0.88, primitive.size_xy[1] * 0.78),
-                primitive.yaw_deg,
-            )
-            roof = _rectangle_points(
-                primitive.center_xy,
-                (primitive.size_xy[0] * 0.78, primitive.size_xy[1] * 0.66),
-                primitive.yaw_deg,
-            )
-            opening = _rectangle_points(
-                primitive.center_xy,
-                (primitive.size_xy[0] * 0.68, primitive.size_xy[1] * 0.34),
-                primitive.yaw_deg,
-            )
-            draw.polygon(shoulder, fill=_height_color(0.20))
-            draw.polygon(roof, fill=_height_color(0.25))
-            draw.polygon(opening, fill=(5, 15, 21))
-            draw.line((*opening, opening[0]), fill=(176, 190, 195), width=1)
         line_width = 2 if primary_surface else 1
         if primitive.category in {
             "central_slope",
@@ -523,24 +540,117 @@ def _draw_static(
                 stroke_width=2,
                 stroke_fill=(22, 31, 36),
             )
+
+    reference_footprints = (
+        (
+            RED_ROAD_CONTROL_FOOTPRINT_XY_M,
+            "ROAD 11°/15° [AMB]",
+        ),
+        (
+            RED_ASSEMBLY_REFERENCE_FOOTPRINT_XY_M,
+            "ASSEMBLY [AMB]",
+        ),
+    )
+    for red_footprint, label in reference_footprints:
+        for team in (Team.RED, Team.BLUE):
+            color = RED if team == Team.RED else BLUE
+            world = (
+                red_footprint
+                if team == Team.RED
+                else tuple((-x, -y) for x, y in reversed(red_footprint))
+            )
+            points = [_to_pixel(x, y) for x, y in world]
+            _draw_dashed_polyline(
+                draw,
+                (*points, points[0]),
+                fill=tuple(channel // 2 for channel in color),
+                width=1,
+            )
+            if red_footprint is RED_ROAD_CONTROL_FOOTPRINT_XY_M:
+                label_xy = (-6.4, -5.15) if team == Team.RED else (6.4, 5.15)
+            else:
+                label_xy = (-2.15, 0.95) if team == Team.RED else (2.15, -0.95)
+            draw.text(
+                _to_pixel(*label_xy),
+                label,
+                fill=(190, 205, 212),
+                font=label_font,
+                anchor="mm",
+                stroke_width=2,
+                stroke_fill=(22, 31, 36),
+            )
+
     for team in (Team.RED, Team.BLUE):
         color = RED if team == Team.RED else BLUE
-        base_center_tensor = arena.base_centers(
-            device="cpu",
-            dtype=torch.float32,
-        )[team]
-        base_center = (
-            float(base_center_tensor[0]),
-            float(base_center_tensor[1]),
+        landing_edge = (
+            RED_FLY_LANDING_REFERENCE_EDGE_XY_M
+            if team == Team.RED
+            else tuple((-x, -y) for x, y in RED_FLY_LANDING_REFERENCE_EDGE_XY_M)
         )
-        # Figure 4-9 does not define how its asymmetric outline is referenced
-        # to the figure 4-5 center. Draw only the published world-axis plan
-        # bounds instead of inventing a centered hexagonal silhouette.
-        base_footprint = _rectangle_points(
-            base_center,
-            BASE_PEDESTAL_SIZE_XY_M,
-            0.0,
+        landing_points = [_to_pixel(x, y) for x, y in landing_edge]
+        _draw_dashed_polyline(
+            draw,
+            landing_points,
+            fill=tuple(channel // 2 for channel in color),
+            width=2,
         )
+        midpoint = (
+            sum(x for x, _ in landing_edge) / 2,
+            sum(y for _, y in landing_edge) / 2,
+        )
+        draw.text(
+            _to_pixel(midpoint[0], midpoint[1] + (0.28 if team == Team.RED else -0.28)),
+            "LANDING · 1.143m [AMB DEPTH]",
+            fill=(190, 205, 212),
+            font=label_font,
+            anchor="mm",
+            stroke_width=2,
+            stroke_fill=(22, 31, 36),
+        )
+
+    for team in (Team.RED, Team.BLUE):
+        color = RED if team == Team.RED else BLUE
+        tunnel_center = (
+            RED_TUNNEL_REFERENCE_CENTER_XY
+            if team == Team.RED
+            else (-RED_TUNNEL_REFERENCE_CENTER_XY[0], -RED_TUNNEL_REFERENCE_CENTER_XY[1])
+        )
+        tunnel_yaw = (
+            RED_TUNNEL_REFERENCE_YAW_DEG
+            if team == Team.RED
+            else RED_TUNNEL_REFERENCE_YAW_DEG + 180.0
+        )
+        tunnel_points = _rectangle_points(
+            tunnel_center,
+            (TUNNEL_REFERENCE_LENGTH_M, TUNNEL_OUTER_WIDTH_M),
+            tunnel_yaw,
+        )
+        _draw_dashed_polyline(
+            draw,
+            (*tunnel_points, tunnel_points[0]),
+            fill=tuple(channel // 2 for channel in color),
+            width=2,
+        )
+        draw.text(
+            _to_pixel(*tunnel_center),
+            "TUNNEL [SIM/AMB]",
+            fill=(190, 205, 212),
+            font=label_font,
+            anchor="mm",
+            stroke_width=2,
+            stroke_fill=(22, 31, 36),
+        )
+
+    for team in (Team.RED, Team.BLUE):
+        color = RED if team == Team.RED else BLUE
+        # Figure 4-9 fixes the rear edge and shoulder coordinates relative to
+        # the figure 4-5 axis. Only the front half-width remains digitized.
+        base_world = (
+            RED_BASE_PEDESTAL_FOOTPRINT_XY_M
+            if team == Team.RED
+            else tuple((-x, -y) for x, y in reversed(RED_BASE_PEDESTAL_FOOTPRINT_XY_M))
+        )
+        base_footprint = [_to_pixel(x, y) for x, y in base_world]
         draw.polygon(base_footprint, fill=(25, 39, 46), outline=color)
         draw.line((*base_footprint, base_footprint[0]), fill=color, width=2)
 
@@ -552,17 +662,18 @@ def _draw_static(
             float(outpost_center_tensor[0]),
             float(outpost_center_tensor[1]),
         )
-        # The manual publishes only one pedestal width, not a 2D footprint.
-        # Render the dimensioned rotating-body diameter and omit an invented
-        # square or octagonal base.
-        draw.ellipse(
-            _ellipse_box(
-                outpost_center,
-                (OUTPOST_BODY_DIAMETER_M / 2, OUTPOST_BODY_DIAMETER_M / 2),
+        # Figure 4-33's Ø550 is the rotating armor sweep envelope, not a
+        # solid-body footprint. Draw it as a dashed reference orbit and omit
+        # the pedestal because only one of its plan dimensions is available.
+        sweep_box = _ellipse_box(
+            outpost_center,
+            (
+                OUTPOST_ARMOR_SWEEP_DIAMETER_M / 2,
+                OUTPOST_ARMOR_SWEEP_DIAMETER_M / 2,
             ),
-            outline=color,
-            width=2,
         )
+        for start_angle in range(0, 360, 24):
+            draw.arc(sweep_box, start=start_angle, end=start_angle + 13, fill=color, width=2)
 
         zone_centers = arena.zone_centers(
             device="cpu",
@@ -604,25 +715,30 @@ def _draw_static(
             float(pad_center_tensor[0]),
             float(pad_center_tensor[1]),
         )
-        pad_outer = _rectangle_points(
+        # Both outlines are visualization-only: the drawing provides reference
+        # spans but not a closed outer rectangle, platform outline, or offset.
+        pad_reference = _rectangle_points(
             pad_center,
-            AERIAL_PAD_OUTER_ENVELOPE_SIZE_XY_M,
+            AERIAL_PAD_FRAME_REFERENCE_SPANS_XY_M,
             0.0,
         )
         pad_landing = _dimensioned_octagon(
             pad_center,
-            AERIAL_PAD_LANDING_SIZE_XY_M,
-            horizontal_straight_edge_m=AERIAL_PAD_LANDING_STRAIGHT_EDGE_M,
-            vertical_straight_edge_m=AERIAL_PAD_LANDING_STRAIGHT_EDGE_M,
+            AERIAL_PAD_PLATFORM_VISUAL_SIZE_XY_M,
+            horizontal_straight_edge_m=AERIAL_PAD_PLATFORM_VISUAL_SIZE_XY_M[0] * 0.58,
+            vertical_straight_edge_m=AERIAL_PAD_PLATFORM_VISUAL_SIZE_XY_M[1] * 0.58,
         )
-        draw.polygon(pad_outer, fill=(25, 39, 46), outline=color)
-        draw.line((*pad_outer, pad_outer[0]), fill=color, width=2)
-        draw.polygon(pad_landing, fill=(19, 32, 39))
-        draw.line((*pad_landing, pad_landing[0]), fill=color, width=1)
+        _draw_dashed_polyline(draw, (*pad_reference, pad_reference[0]), fill=color, width=2)
+        _draw_dashed_polyline(
+            draw,
+            (*pad_landing, pad_landing[0]),
+            fill=tuple(channel // 2 for channel in color),
+            width=1,
+        )
         label_sign = 1.0 if team == Team.RED else -1.0
         draw.text(
             _to_pixel(pad_center[0], pad_center[1] - 0.92 * label_sign),
-            "[SIM] PAD",
+            "PAD · [SIM GEOM]",
             fill=(190, 205, 212),
             font=label_font,
             anchor="mm",
@@ -646,20 +762,10 @@ def _draw_static(
         stroke_width=2,
         stroke_fill=(22, 31, 36),
     )
-    for label_xy in ((-1.45, 0.45), (1.45, -0.45)):
-        draw.text(
-            _to_pixel(*label_xy),
-            "ASSEMBLY [SIM]",
-            fill=(226, 235, 237),
-            font=label_font,
-            anchor="mm",
-            stroke_width=2,
-            stroke_fill=(22, 31, 36),
-        )
     _draw_height_legend(draw, legend_font)
     draw.text(
         (CANVAS[0] // 2, CANVAS[1] - 38),
-        "OUTLINES = PUBLISHED DIMENSIONS · [SIM] = DIAGRAM-DERIVED PLACEMENT",
+        "NOMINAL DIMENSION CHAINS · [DIGITIZED] PLAN CALIBRATION · [SIM] MODEL CHOICE",
         fill=(108, 131, 142),
         font=legend_font,
         anchor="ms",
@@ -862,13 +968,38 @@ def main() -> None:
                 draw.line((*structure, structure[0]), fill=outline, width=2)
                 display_radius = _meters_to_pixels(max(BASE_PEDESTAL_SIZE_XY_M) / 2)
             elif role == Role.OUTPOST:
-                radius = _meters_to_pixels(OUTPOST_BODY_DIAMETER_M / 2)
+                # Compact state glyph: three armor modules orbit inside the
+                # separately drawn official Ø550 sweep reference.
+                radius = _meters_to_pixels(OUTPOST_ARMOR_SWEEP_DIAMETER_M / 2)
+                hub_radius = max(2, _meters_to_pixels(0.065))
                 draw.ellipse(
-                    (x - radius, y - radius, x + radius, y + radius),
+                    (
+                        x - hub_radius,
+                        y - hub_radius,
+                        x + hub_radius,
+                        y + hub_radius,
+                    ),
                     fill=color,
                     outline=outline,
-                    width=2,
+                    width=1,
                 )
+                armor_radius = max(2, _meters_to_pixels(0.045))
+                for angle_deg in (0.0, 120.0, 240.0):
+                    angle = math.radians(angle_deg) + float(yaw[unit])
+                    armor_x = round(x + math.cos(angle) * radius * 0.72)
+                    armor_y = round(y - math.sin(angle) * radius * 0.72)
+                    draw.line((x, y, armor_x, armor_y), fill=color, width=2)
+                    draw.ellipse(
+                        (
+                            armor_x - armor_radius,
+                            armor_y - armor_radius,
+                            armor_x + armor_radius,
+                            armor_y + armor_radius,
+                        ),
+                        fill=color,
+                        outline=outline,
+                        width=1,
+                    )
                 display_radius = radius
             else:
                 radius_m = 0.32 if role == Role.AERIAL else 0.40

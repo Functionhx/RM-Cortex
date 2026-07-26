@@ -29,28 +29,19 @@ def test_video_uses_the_exact_isotropic_field_viewport() -> None:
     assert visualize_torch._meters_to_pixels(1.0) == 36
 
 
-def test_published_base_and_pad_dimensions_keep_metric_scale() -> None:
+def test_base_core_and_pad_reference_spans_keep_metric_scale() -> None:
     viewport = visualize_torch.VIEWPORT
-    base = visualize_torch._rectangle_points(
+    base = [
+        visualize_torch._to_pixel(x, y) for x, y in visualize_torch.RED_BASE_PEDESTAL_FOOTPRINT_XY_M
+    ]
+    pad_reference = visualize_torch._rectangle_points(
         (0.0, 0.0),
-        visualize_torch.BASE_PEDESTAL_SIZE_XY_M,
+        visualize_torch.AERIAL_PAD_FRAME_REFERENCE_SPANS_XY_M,
         0.0,
-    )
-    pad_outer = visualize_torch._rectangle_points(
-        (0.0, 0.0),
-        visualize_torch.AERIAL_PAD_OUTER_ENVELOPE_SIZE_XY_M,
-        0.0,
-    )
-    pad_landing = visualize_torch._dimensioned_octagon(
-        (0.0, 0.0),
-        visualize_torch.AERIAL_PAD_LANDING_SIZE_XY_M,
-        horizontal_straight_edge_m=visualize_torch.AERIAL_PAD_LANDING_STRAIGHT_EDGE_M,
-        vertical_straight_edge_m=visualize_torch.AERIAL_PAD_LANDING_STRAIGHT_EDGE_M,
     )
 
     base_width, base_height = _bounds(base)
-    pad_outer_width, pad_outer_height = _bounds(pad_outer)
-    pad_landing_width, pad_landing_height = _bounds(pad_landing)
+    pad_reference_width, pad_reference_height = _bounds(pad_reference)
 
     assert base_width == pytest.approx(
         viewport.pixels_per_meter * visualize_torch.BASE_PEDESTAL_SIZE_XY_M[0],
@@ -60,28 +51,12 @@ def test_published_base_and_pad_dimensions_keep_metric_scale() -> None:
         viewport.pixels_per_meter * visualize_torch.BASE_PEDESTAL_SIZE_XY_M[1],
         abs=1.0,
     )
-    assert pad_outer_width == pytest.approx(
-        viewport.pixels_per_meter * visualize_torch.AERIAL_PAD_OUTER_ENVELOPE_SIZE_XY_M[0],
+    assert pad_reference_width == pytest.approx(
+        viewport.pixels_per_meter * visualize_torch.AERIAL_PAD_FRAME_REFERENCE_SPANS_XY_M[0],
         abs=1.0,
     )
-    assert pad_outer_height == pytest.approx(
-        viewport.pixels_per_meter * visualize_torch.AERIAL_PAD_OUTER_ENVELOPE_SIZE_XY_M[1],
-        abs=1.0,
-    )
-    assert pad_landing_width == pytest.approx(
-        viewport.pixels_per_meter * visualize_torch.AERIAL_PAD_LANDING_SIZE_XY_M[0],
-        abs=1.0,
-    )
-    assert pad_landing_height == pytest.approx(
-        viewport.pixels_per_meter * visualize_torch.AERIAL_PAD_LANDING_SIZE_XY_M[1],
-        abs=1.0,
-    )
-    assert abs(pad_landing[1][0] - pad_landing[0][0]) == pytest.approx(
-        viewport.pixels_per_meter * visualize_torch.AERIAL_PAD_LANDING_STRAIGHT_EDGE_M,
-        abs=1.0,
-    )
-    assert abs(pad_landing[3][1] - pad_landing[2][1]) == pytest.approx(
-        viewport.pixels_per_meter * visualize_torch.AERIAL_PAD_LANDING_STRAIGHT_EDGE_M,
+    assert pad_reference_height == pytest.approx(
+        viewport.pixels_per_meter * visualize_torch.AERIAL_PAD_FRAME_REFERENCE_SPANS_XY_M[1],
         abs=1.0,
     )
 
